@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,15 @@ def _state_to_mood(state: State) -> str:
     if state in (State.IDLE, State.EXITED, State.UNKNOWN):
         return MOOD_SLEEPY
     return MOOD_HAPPY
+
+
+# Yawn animation timing. Three phases: sink, hold, rise. The curve is a
+# triangle wave through these phases, not a sin -- a yawn has a clear
+# "drop ... pause ... return" shape that a sin would smooth over.
+_YAWN_SINK = 0.30  # seconds
+_YAWN_HOLD = 0.50
+_YAWN_RISE = 0.30
+_YAWN_DEPTH = 6.0  # pixels of downward translate at peak
 
 
 class _MoodMotion(NamedTuple):
@@ -153,6 +163,13 @@ class PetWindow(QWidget):
         # timer doesn't fight the animation by re-showing mid-fade.
         self._fading = False
         self._fade_anim: QPropertyAnimation | None = None
+        # Idle yawn animation. _next_yawn_at is the wall-clock time of the
+        # next yawn trigger; _yawn_started_at is the start of the in-flight
+        # yawn (0.0 = not yawning). The yawn is a 1.1s non-sinusoidal offset
+        # added to the head-bob translate when mood is sleepy.
+        self._next_yawn_at: float = time.monotonic() + random.uniform(6.0, 12.0)
+        self._yawn_started_at: float = 0.0
+        self._yawn_duration: float = 1.1
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -264,7 +281,10 @@ class PetWindow(QWidget):
             mood = _state_to_mood(self._overall)
             m = MOOD_MOTION[mood]
             head_bob = m.head_amp * math.sin(t * m.head_freq) + m.head_offset
-            painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob)
+            # Yawn only when sleepy -- a busy session has no business
+            # looking drowsy. The helper self-ticks its own schedule.
+            yawn = self.yawn_offset() if mood == MOOD_SLEEPY else 0.0
+            painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob + yawn)
             painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
 
         pixmap = QPixmap.fromImage(
@@ -388,6 +408,32 @@ class PetWindow(QWidget):
             return
         target = min(candidates, key=lambda s: priority.index(s.state))
         jump_to_session(target.pid, target.cwd)
+
+    def yawn_offset(self) -> float:
+        """Vertical pixel offset for the in-flight yawn, or 0.
+
+        Self-schedules: each call checks whether the next yawn should start,
+        progresses an in-flight yawn, and rolls the dice for the next gap
+        (8-16 s) once the current one finishes. The state is fully on the
+        PetWindow so paintEvent only reads, never writes.
+        """
+        t = time.monotonic()
+        if self._yawn_started_at == 0.0 and t >= self._next_yawn_at:
+            self._yawn_started_at = t
+        if self._yawn_started_at == 0.0:
+            return 0.0
+        elapsed = t - self._yawn_started_at
+        total = _YAWN_SINK + _YAWN_HOLD + _YAWN_RISE
+        if elapsed >= total:
+            self._yawn_started_at = 0.0
+            self._next_yawn_at = t + random.uniform(8.0, 16.0)
+            return 0.0
+        if elapsed < _YAWN_SINK:
+            return _YAWN_DEPTH * (elapsed / _YAWN_SINK)
+        if elapsed < _YAWN_SINK + _YAWN_HOLD:
+            return _YAWN_DEPTH
+        rise = elapsed - _YAWN_SINK - _YAWN_HOLD
+        return _YAWN_DEPTH * (1.0 - rise / _YAWN_RISE)
 
     def _check_hover(self) -> None:
         """Update hover state if the cursor moves in/out without an event."""
