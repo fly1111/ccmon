@@ -143,6 +143,11 @@ class PetWindow(QWidget):
         self._click_timer: QTimer | None = None
         self._hover = False
         self._bubble: QLabel | None = None
+        # Set while a right-click menu is open. _check_hover must skip its
+        # show-bubble branch during this window or the bubble flashes back
+        # in 100ms after we hide it -- Qt's event loop keeps running through
+        # the blocking menu.exec().
+        self._menu_open = False
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -331,7 +336,7 @@ class PetWindow(QWidget):
 
     def _check_hover(self) -> None:
         """Update hover state if the cursor moves in/out without an event."""
-        if not self.isVisible():
+        if self._menu_open or not self.isVisible():
             return
         top_left = self.mapToGlobal(QPoint(0, 0))
         rect = QRect(top_left, self.size())
@@ -486,8 +491,13 @@ class PetWindow(QWidget):
         # re-show the bubble naturally once the menu closes and the cursor is
         # still over the pet. (Just hiding without flipping the flag would
         # leave the bubble stuck off until the cursor leaves and re-enters.)
+        #
+        # The _menu_open flag also short-circuits _check_hover for the whole
+        # exec() call -- otherwise the 100ms hover timer fires mid-menu and
+        # re-shows the bubble, causing a visible flash.
         self._hide_bubble()
         self._hover = False
+        self._menu_open = True
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu{padding:6px;}"
@@ -549,6 +559,10 @@ class PetWindow(QWidget):
             style_menu.addAction(action)
 
         menu.exec(global_pos)
+        # Reset the hover guard now that exec() has returned. If exec raises
+        # the user gets a one-time bug (hover stays off until restart) but
+        # QMenu.exec in practice doesn't.
+        self._menu_open = False
 
     def _switch_style(self, name: str) -> None:
         from .sprite_loader import set_active_style
