@@ -43,6 +43,7 @@ class Notifier:
     webhooks: list[WebhookConfig] = field(default_factory=list)
     sounds: dict[State, str] = field(default_factory=dict)
     muted: set[int] = field(default_factory=set)
+    on_jump: object = None  # Callable[[int, str], Any] | None -- injected by main
 
     _last_fired: dict[tuple[int, State], float] = field(default_factory=dict)
     _pending: dict[int, _Pending] = field(default_factory=dict)

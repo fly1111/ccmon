@@ -141,6 +141,14 @@ def cmd_ps(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
+    # Minimal logging so the graceful-shutdown breadcrumbs are visible when
+    # the app is launched from a terminal.
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        stream=sys.stderr,
+    )
     parser = argparse.ArgumentParser(
         prog="ccmon", description="监控正在运行的 Claude Code 会话状态"
     )
@@ -179,6 +187,7 @@ def _run_tray() -> int:
     from .win.activate import jump_to_session
 
     notifier = Notifier()
+    notifier.on_jump = lambda pid, cwd: jump_to_session(pid, cwd)
     pet_visible = {"v": False}
 
     def do_jump(pid: int) -> None:
@@ -256,12 +265,18 @@ def _run_pet() -> int:
     from .ui.pet.run import run as run_pet
 
     engine = Engine(interval=1.5)
+    # run_pet will call engine.start() via the PetBridge, but call it here
+    # too so the scanner runs even before the pet window's event loop
+    # has a chance to subscribe.
+    engine.start()
     return run_pet(engine)
 
 
 def _run_both() -> int:
     """Tray + pet sharing one engine."""
     import asyncio
+    import logging
+    import signal
     import threading
 
     from .engine import Engine
@@ -271,6 +286,7 @@ def _run_both() -> int:
 
     engine = Engine(interval=1.5)
     notifier = Notifier()
+    notifier.on_jump = lambda pid, cwd: jump_to_session(pid, cwd)
     engine.subscribe(notifier.on_tick)
 
     loop = asyncio.new_event_loop()
@@ -296,9 +312,48 @@ def _run_both() -> int:
         }
         run_tray(engine, callbacks)
 
-    threading.Thread(target=tray_in_thread, name="ccmon-tray", daemon=True).start()
+    tray_thread = threading.Thread(target=tray_in_thread, name="ccmon-tray", daemon=True)
+    tray_thread.start()
+
+    # Wire Ctrl+C / SIGTERM to a clean shutdown that stops both the
+    # engine and the notifier loop, then quits the Qt app. Qt's event
+    # loop ignores SIGINT by default on Windows, so the pet's signal
+    # handler in ui/pet/run.py is the real exit trigger; this one is a
+    # backup that runs in the main thread.
+    def _shutdown(*_a) -> None:
+        logging.getLogger("ccmon").info("shutdown: signal received, cleaning up")
+        try:
+            engine.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except Exception:  # noqa: BLE001
+            pass
+        # QApplication may not exist yet if signal fires before run_pet starts.
+        try:
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
     code = run_pet(engine)
-    loop.call_soon_threadsafe(loop.stop)
+    # run_pet returned (likely because of graceful_quit from its own
+    # signal handler) -- make sure the other threads are stopped.
+    try:
+        engine.stop()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        loop.call_soon_threadsafe(loop.stop)
+    except Exception:  # noqa: BLE001
+        pass
+    logging.getLogger("ccmon").info("shutdown: both modes exited with code %s", code)
     return code
 
 

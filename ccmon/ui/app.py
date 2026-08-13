@@ -138,11 +138,12 @@ def run(engine: Engine, callbacks: dict, *, initial_tick: Tick | None = None) ->
     initial = initial_tick or engine.latest()
     icon_image = render_icon(initial.overall) if initial else render_icon(State.IDLE)
 
+    initial_menu = pystray.Menu(*_menu(None, initial or _empty_tick(), callbacks))
     tray_icon = pystray.Icon(
         "ccmon",
         icon=icon_image,
         title="ccmon",
-        menu=pystray.Menu(lambda i: _menu(i, initial or _empty_tick(), callbacks)),
+        menu=initial_menu,
     )
 
     engine.subscribe(on_tick)

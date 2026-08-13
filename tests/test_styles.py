@@ -15,7 +15,6 @@ from ccmon.ui.pet import sprite_loader
 @pytest.fixture
 def style_env(tmp_path, monkeypatch):
     """Point the loader at a temporary assets dir, with a synthetic style."""
-    # data_dir is lru_cache'd; patch by replacing its return value.
     assets = tmp_path / "assets" / "pet"
     assets.mkdir(parents=True)
     style_a = assets / "cute"
@@ -25,7 +24,10 @@ def style_env(tmp_path, monkeypatch):
         path = style_a / f"{mood}_alpha.png"
         img = __import__("PIL.Image", fromlist=["Image"]).new("RGBA", (1, 1), (0, 0, 0, 0))
         img.save(path, format="PNG")
-    monkeypatch.setattr(sprite_loader, "_assets_root", lambda: assets)
+    # Force the loader to look at our temp dir for BOTH project and user
+    # roots -- one fixture, both call sites.
+    monkeypatch.setattr(sprite_loader, "_project_assets_root", lambda: assets)
+    monkeypatch.setattr(sprite_loader, "_user_assets_root", lambda: assets)
     monkeypatch.setattr(sprite_loader, "_style_config_path", lambda: tmp_path / "pet-style.json")
     return tmp_path
 
