@@ -42,13 +42,15 @@ uv pip install -e ".[dev,tray,pet]"
 
 ## 用法
 
+> **平台说明**：`ccmon ps` 跨平台（Windows / macOS / Linux）；`ccmon tray` / `ccmon pet` / `ccmon both` 仅 Windows，因为托盘和宠物依赖 Win32 / Qt GUI。
+
 ```bash
 ccmon ps              # 打印一次当前所有会话
 ccmon ps -w           # 持续刷新（Ctrl-C 退出）
 ccmon ps -w -n 0.5    # 自定义刷新间隔
-ccmon tray           # 只起系统托盘
-ccmon pet            # 只起桌面宠物
-ccmon both           # 托盘 + 宠物一起
+ccmon tray           # 只起系统托盘（Windows）
+ccmon pet            # 只起桌面宠物（Windows）
+ccmon both           # 托盘 + 宠物一起（Windows）
 ```
 
 输出示例：
@@ -60,6 +62,45 @@ ccmon both           # 托盘 + 宠物一起
 * 运行中    ComfyUI    28860  2s    Edit: nodes.py
 - 空闲      michang    27510  12m   空闲
 ```
+
+## 在 Linux 服务器上用
+
+`ccmon ps` + webhook 就够覆盖服务器场景，零 GUI 依赖：
+
+```bash
+# Ubuntu 24.04 / Debian 12+（任何装了 Python 3.11+ 的发行版都行）
+python3.11 -m venv .venv
+.venv/bin/pip install ccmon     # 或 uv pip install / pipx install
+
+# 实时看（SSH 进去）
+ccmon ps --watch
+
+# 不带颜色（适合日志/管道/服务化）
+ccmon ps --no-color | tee -a /var/log/ccmon.log
+
+# 推到手机 —— 配 webhook（参见下文），需要时通知
+ccmon ps --watch    # 配合 ~/.ccmon/webhook.json
+```
+
+服务器上长期跑推荐 systemd unit：
+
+```ini
+# /etc/systemd/system/ccmon.service
+[Unit]
+Description=ccmon Claude Code monitor
+After=network.target
+
+[Service]
+Type=simple
+User=yourname
+ExecStart=/home/yourname/.venv/bin/ccmon ps --watch --no-color
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`LOCALAPPDATA` 在 Linux 上不存在，ccmon 自动把状态文件落到 `~/.ccmon/`，与 Claude 自身的 `~/.claude/` 完全隔离。
 
 ## 开机自启
 

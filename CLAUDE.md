@@ -133,7 +133,7 @@ bash scripts/gen_pet_sprites.sh peter "Strong male dalmatian, stocky muscular bu
 ## 用户偏好
 
 - **UI 文字用中文**，代码注释用英文（参考 `dingyue` 风格）
-- **Windows 唯一平台**（Linux/macOS 暂不支持）
+- **托盘/宠物仅 Windows**（Linux/macOS 暂不支持）；**CLI 跨平台**（`ccmon ps` + webhook 在 Ubuntu/Debian 上可跑，零 GUI 依赖）
 - **宠物 peter 命名**：用户自己起的名字，不要改
 - **不在 toast 按钮上下太多功夫**（winotify pipe 回调在 Windows 上不稳定），优先 hover 气泡 + 宠物本体交互
 - 资源放工程目录（git 跟踪），不放 `%LOCALAPPDATA%`

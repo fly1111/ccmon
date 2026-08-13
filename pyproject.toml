@@ -1,9 +1,18 @@
 [project]
 name = "ccmon"
 version = "0.1.0"
-description = "Windows tray + desktop-pet monitor for Claude Code CLI sessions"
+description = "Claude Code session monitor (CLI is cross-platform; tray + pet are Windows-only)"
 readme = "README.md"
 requires-python = ">=3.11"
+# The CLI (`ccmon ps`, webhook delivery) runs anywhere with Python 3.11+.
+# Tray and desktop pet are Windows-only -- the optional deps below use
+# sys_platform markers so install on Linux pulls only the cross-platform bits.
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "psutil>=7.0",
     "pillow>=11.0",
