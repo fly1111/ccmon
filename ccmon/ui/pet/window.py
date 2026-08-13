@@ -481,10 +481,13 @@ class PetWindow(QWidget):
 
     def _show_menu(self, global_pos: QPoint) -> None:
         # The hover bubble and the right-click menu both appear at roughly the
-        # same spot and would stack on top of each other. Hide the bubble for
-        # the duration of the menu; _check_hover will re-show it once the menu
-        # closes and the cursor is still over the pet.
+        # same spot and would stack on top of each other. Hide the bubble AND
+        # drop the hover flag for the duration of the menu; _check_hover will
+        # re-show the bubble naturally once the menu closes and the cursor is
+        # still over the pet. (Just hiding without flipping the flag would
+        # leave the bubble stuck off until the cursor leaves and re-enters.)
         self._hide_bubble()
+        self._hover = False
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu{padding:6px;}"
