@@ -44,7 +44,7 @@ from PySide6.QtGui import (
     QPainter,
     QPixmap,
 )
-from PySide6.QtWidgets import QApplication, QLabel, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QStyle, QWidget
 
 from ...models import Session, State
 from .sprite_loader import render_frame
@@ -215,16 +215,22 @@ class PetWindow(QWidget):
             bubble.setWindowFlags(
                 Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
             )
-            # No WA_TranslucentBackground -- we want a fully opaque dark bubble
-            # so it stays readable on any desktop background (white, light
-            # grey, busy wallpaper, etc).
+            # Layered look: dark rounded card with a coloured left edge that
+            # echoes the global worst state. Solid background so it's readable
+            # on any desktop colour.
             bubble.setStyleSheet(
-                "QLabel{background-color: #1E1E1E;"
-                "color: #FFFFFF; padding: 10px 12px; border-radius: 12px;"
-                "font-family: 'Segoe UI'; font-size: 13px;"
-                "border: 1px solid #444;}"
+                "QLabel{"
+                "background-color: #1F2329;"
+                "color: #ECEFF1;"
+                "padding: 14px 18px 12px 22px;"
+                "border-radius: 12px;"
+                "border: 1px solid #2E333B;"
+                "font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;"
+                "font-size: 12px;"
+                "}"
             )
             bubble.setTextFormat(Qt.RichText)
+            bubble.setWordWrap(True)
             bubble.show()
             self._bubble = bubble
         self._refresh_bubble()
@@ -236,34 +242,68 @@ class PetWindow(QWidget):
         if not sessions:
             self._bubble.hide()
             return
-        lines: list[str] = []
+
+        accent = self._overall.color  # colour the bubble border by overall state
+        rows: list[str] = []
         attention = 0
         for s in sessions:
             colour = SPOT_COLORS.get(s.state, "#90A4AE")
             glyph = SPOT_GLYPHS.get(s.state, "●")
             state_label = s.state.label
-            detail = s.detail
-            lines.append(
-                f"<span style='color:{colour};font-size:14px'>{glyph}</span> "
-                f"<b>{s.project}</b> · "
-                f"<span style='color:#B0BEC5'>{state_label}</span><br>"
-                f"<span style='color:#ECEFF1;margin-left:18px'>{detail}</span>"
+            detail = s.detail or ""
+            # Each session is a small block: a coloured dot, the project name
+            # in bold, the state label, then the detail on the next line in
+            # muted colour indented to match the dot.
+            rows.append(
+                f"<tr><td style='padding:0 8px 6px 0;vertical-align:top;'>"
+                f"<span style='color:{colour};font-size:13px'>{glyph}</span></td>"
+                f"<td style='padding:0 0 6px 0;vertical-align:top;'>"
+                f"<div style='line-height:1.35'>"
+                f"<span style='font-size:13px;font-weight:600;color:#F5F7FA'>{s.project}</span>"
+                f"  <span style='color:{colour};font-size:11px;font-weight:600;"
+                f"text-transform:uppercase;letter-spacing:0.5px'>· {state_label}</span>"
+                f"</div>"
+                f"<div style='color:#9AA5B1;font-size:11px;line-height:1.35;"
+                f"margin-top:1px'>{detail}</div>"
+                f"</td></tr>"
             )
             if s.state.needs_attention:
                 attention += 1
-        footer = f"<br><span style='color:#90A4AE;font-size:11px'>{len(sessions)} 个会话"
+
+        body = (
+            "<table cellspacing='0' cellpadding='0' style='border-collapse:collapse'>"
+            + "".join(rows)
+            + "</table>"
+        )
+        footer_text = f"{len(sessions)} 个会话"
         if attention:
-            footer += f" · {attention} 个需关注"
-        footer += "</span>"
-        self._bubble.setText("<div style='line-height:1.5'>" + "<br>".join(lines) + footer + "</div>")
+            footer_text += f"  ·  <span style='color:{accent};font-weight:600'>{attention} 个需关注</span>"
+        # 6px coloured left bar done by wrapping content in a 1x1 coloured
+        # table with the dark panel as its right cell.
+        html = (
+            "<table cellspacing='0' cellpadding='0' style='border-collapse:collapse'>"
+            "<tr>"
+            f"<td style='width:4px;background:{accent};border-radius:2px'>"
+            "&nbsp;</td>"
+            "<td style='padding-left:12px'>"
+            f"<div style='margin-bottom:8px;color:#F5F7FA;font-size:13px;font-weight:600;"
+            f"letter-spacing:0.3px'>Claude Code 会话</div>"
+            f"{body}"
+            f"<div style='margin-top:8px;padding-top:8px;"
+            f"border-top:1px solid #2E333B;color:#7A8593;font-size:11px'>"
+            f"{footer_text}</div>"
+            "</td></tr></table>"
+        )
+        self._bubble.setText(html)
+        # Cap width at 360 px so long details wrap instead of stretching.
+        self._bubble.setMaximumWidth(360)
+        self._bubble.setMinimumWidth(220)
         self._bubble.adjustSize()
-        # Position above the dog, centred.
         top_left = self.mapToGlobal(QPoint(0, 0))
         bw = self._bubble.width()
         bh = self._bubble.height()
         bx = top_left.x() + (self.width() - bw) // 2
-        by = top_left.y() - bh - 8
-        # Keep on screen.
+        by = top_left.y() - bh - 10
         screen = QGuiApplication.screenAt(top_left) or QGuiApplication.primaryScreen()
         if screen is not None:
             geo = screen.availableGeometry()
@@ -280,42 +320,55 @@ class PetWindow(QWidget):
 
     def _show_menu(self, global_pos: QPoint) -> None:
         menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu{padding:6px;}"
+            "QMenu::item{padding:7px 22px 7px 28px;border-radius:6px;margin:1px 4px;}"
+            "QMenu::item:selected{background:#2A323C;color:#F5F7FA;}"
+            "QMenu::item:disabled{color:#5C6773;}"
+            "QMenu::separator{height:1px;background:#2E333B;margin:4px 8px;}"
+        )
+        std = menu.style().standardIcon
         if not self._sessions:
-            empty = QAction("没有会话", self)
+            empty = QAction(std(QStyle.SP_MessageBoxInformation), "没有会话", self)
             empty.setEnabled(False)
             menu.addAction(empty)
         else:
-            for session in self._sessions:
-                title = f"{session.state.glyph} {session.project} · {session.state.label}"
-                header = QAction(title, self)
+            for index, session in enumerate(self._sessions):
+                if index:
+                    menu.addSeparator()
+                # Header row: coloured glyph + project + state
+                colour = SPOT_COLORS.get(session.state, "#90A4AE")
+                header = QAction(
+                    f"{session.state.glyph}  {session.project}  ·  {session.state.label}",
+                    self,
+                )
                 header.setEnabled(False)
                 menu.addAction(header)
                 if session.session_id:
-                    act = QAction("跳转到窗口", self)
-                    act.triggered.connect(lambda _=False, pid=session.pid: self.jump_requested.emit(pid))
-                    menu.addAction(act)
-                    copy = QAction("复制会话ID", self)
+                    jump = QAction(std(QStyle.SP_ArrowRight), "跳转到窗口", self)
+                    jump.triggered.connect(lambda _=False, pid=session.pid: self.jump_requested.emit(pid))
+                    menu.addAction(jump)
+                    copy = QAction(std(QStyle.SP_DialogSaveButton), "复制会话ID", self)
                     sid = session.session_id
                     copy.triggered.connect(lambda _=False, s=sid: self.copy_requested.emit(s))
                     menu.addAction(copy)
                     if session.transcript:
-                        open_act = QAction("打开对话记录", self)
+                        open_act = QAction(std(QStyle.SP_FileIcon), "打开对话记录", self)
                         path = str(session.transcript)
                         open_act.triggered.connect(lambda _=False, p=path: self.open_transcript.emit(path))
                         menu.addAction(open_act)
-                mute = QAction("静音此会话", self)
-                pid = session.pid
-                mute.triggered.connect(lambda _=False, p=pid: self.mute_requested.emit(pid))
+                mute = QAction(std(QStyle.SP_MediaVolumeMuted), "静音此会话", self)
+                mute.triggered.connect(lambda _=False, p=session.pid: self.mute_requested.emit(session.pid))
                 menu.addAction(mute)
-                menu.addSeparator()
-        hide = QAction("隐藏宠物", self)
+
+        menu.addSeparator()
+        hide = QAction(menu.style().standardIcon(QStyle.SP_DialogCloseButton), "隐藏宠物", self)
         hide.triggered.connect(self.toggle_self.emit)
         menu.addAction(hide)
-        menu.addSeparator()
 
         # 形象 submenu
         from .sprite_loader import list_styles, get_active_style, set_active_style
-        style_menu = menu.addMenu("形象")
+        style_menu = menu.addMenu(menu.style().standardIcon(QStyle.SP_DirHomeIcon), "形象")
         current_style = get_active_style()
         for style in list_styles():
             action = QAction(style.label, self)
