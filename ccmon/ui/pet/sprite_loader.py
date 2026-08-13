@@ -34,6 +34,13 @@ from . import fallback_sprite
 BUILTIN_STYLE = "_builtin"  # never on disk; always available
 DEFAULT_STYLE = "peter"
 
+# Pseudo-mood that picks walk-cycle frames instead of mood art. The pet
+# uses it during a walk-around trip; the sprite is frame-indexed by the
+# caller's walk_frame_idx.
+MOOD_WALKING = "walking"
+WALK_FRAMES_PREFIX = "walk_"
+WALK_FPS = 12  # 4 frames at 12 fps = 3 fps perceived, comfortable for a cat
+
 
 @dataclass
 class StyleInfo:
@@ -152,6 +159,34 @@ def _asset_for(style: str, overall: State) -> Path | None:
                 if candidate.exists():
                     return candidate
     return None
+
+
+def list_walk_frames(style: str) -> list[Path]:
+    """Return walk_<N>_alpha.png paths for `style` in numeric order.
+
+    Empty list when the style has no walk cycle (e.g. peter, peter2, or
+    a luna that hasn't been regenerated with the walk frames yet). The
+    caller is responsible for wraparound indexing.
+    """
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for d in _asset_dirs_for(style):
+        if not d.is_dir():
+            continue
+        for p in sorted(d.glob(f"{WALK_FRAMES_PREFIX}*_alpha.png")):
+            if p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def walk_frame_path(style: str, frame_idx: int) -> Path | None:
+    """Pick the Nth walk frame (0-indexed) with wraparound. None if no frames."""
+    frames = list_walk_frames(style)
+    if not frames:
+        return None
+    return frames[frame_idx % len(frames)]
 
 
 def render_frame(

@@ -170,6 +170,25 @@ class PetWindow(QWidget):
         self._next_yawn_at: float = time.monotonic() + random.uniform(6.0, 12.0)
         self._yawn_started_at: float = 0.0
         self._yawn_duration: float = 1.1
+        # Walk-around behaviour. _walk_phase: "idle" | "going" | "staying"
+        # | "returning". _walk_origin is the home position the pet returns
+        # to; _walk_target is the cursor-following destination. _walk_anim
+        # is the QPropertyAnimation driving the position. Mouse idle is
+        # tracked by _last_mouse_pos and _mouse_idle_since.
+        self._walk_phase: str = "idle"
+        self._walk_origin: QPoint = QPoint()
+        self._walk_target: QPoint = QPoint()
+        self._walk_anim: QPropertyAnimation | None = None
+        self._stay_until: float = 0.0
+        self._last_mouse_pos: QPoint | None = None
+        self._mouse_idle_since: float | None = None
+        self._walk_idle_threshold: float = 5.0  # seconds before walking
+        self._walk_stay_seconds: float = 3.0
+        # Cache of body/legs layer splits keyed by walk-frame path. Built
+        # once per frame (the cut is at a fixed ratio) and reused every
+        # paint tick -- a crop is cheap but doing it 30 times a second
+        # for the same image is wasted work.
+        self._walk_layer_cache: dict = {}
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -235,63 +254,123 @@ class PetWindow(QWidget):
 
     def paintEvent(self, _event) -> None:
         t = time.monotonic() - self._t0
-        image = self._image_cache.get(self._overall)
-        if image is None:
-            image = render_frame(
-                self._overall,
-                self._sessions,
-                time_seconds=t,
-                size=PET_SIZE,
-                spot_jitter=self._spot_jitter,
+        # Walk-around bypasses the mood image cache entirely -- the body
+        # and legs layers are composited on each paint tick to read as
+        # stepping. Outside walk mode we use the same per-state cache as
+        # before so a stable state doesn't keep re-opening the PNG.
+        if self._walk_phase in ("going", "returning"):
+            image = self._render_walk_frame()
+            use_transform = get_active_style() != BUILTIN_STYLE
+        else:
+            image = self._image_cache.get(self._overall)
+            if image is None:
+                image = render_frame(
+                    self._overall,
+                    self._sessions,
+                    time_seconds=t,
+                    size=PET_SIZE,
+                    spot_jitter=self._spot_jitter,
+                )
+                self._image_cache[self._overall] = image
+
+            # Crossfade old -> new while inside the transition window. Skip
+            # the motion transform during the fade so both sprites render at
+            # rest; otherwise the jittery mood would clash with the previous
+            # mood's pose.
+            in_transition = False
+            if (
+                self._prev_overall is not None
+                and self._prev_overall != self._overall
+            ):
+                elapsed = time.monotonic() - self._transition_start
+                if elapsed < TRANSITION_SECONDS:
+                    in_transition = True
+                    prev = self._image_cache.get(self._prev_overall)
+                    if prev is None:
+                        prev = render_frame(
+                            self._prev_overall,
+                            self._sessions,
+                            time_seconds=t,
+                            size=PET_SIZE,
+                            spot_jitter=self._spot_jitter,
+                        )
+                        self._image_cache[self._prev_overall] = prev
+                    alpha = elapsed / TRANSITION_SECONDS
+                    image = Image.blend(prev, image, alpha)
+            use_transform = (
+                get_active_style() != BUILTIN_STYLE
+                and not in_transition
             )
-            self._image_cache[self._overall] = image
-
-        # Crossfade old -> new while inside the transition window. Skip the
-        # motion transform during the fade so both sprites render at rest;
-        # otherwise the jittery mood would clash with the previous mood's pose.
-        in_transition = False
-        if (
-            self._prev_overall is not None
-            and self._prev_overall != self._overall
-        ):
-            elapsed = time.monotonic() - self._transition_start
-            if elapsed < TRANSITION_SECONDS:
-                in_transition = True
-                prev = self._image_cache.get(self._prev_overall)
-                if prev is None:
-                    prev = render_frame(
-                        self._prev_overall,
-                        self._sessions,
-                        time_seconds=t,
-                        size=PET_SIZE,
-                        spot_jitter=self._spot_jitter,
-                    )
-                    self._image_cache[self._prev_overall] = prev
-                alpha = elapsed / TRANSITION_SECONDS
-                image = Image.blend(prev, image, alpha)
-
-        # _builtin paints motion inside the image; AI styles are static PNGs,
-        # so we apply per-mood transform ourselves.
-        use_transform = get_active_style() != BUILTIN_STYLE and not in_transition
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         if use_transform:
-            mood = _state_to_mood(self._overall)
-            m = MOOD_MOTION[mood]
-            head_bob = m.head_amp * math.sin(t * m.head_freq) + m.head_offset
-            # Yawn only when sleepy -- a busy session has no business
-            # looking drowsy. The helper self-ticks its own schedule.
-            yawn = self.yawn_offset() if mood == MOOD_SLEEPY else 0.0
-            painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob + yawn)
-            painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
+            if self._walk_phase in ("going", "returning"):
+                # Walk: body sway via rotation, no head-bob / yawn.
+                # Layer compositing inside _render_walk_frame already
+                # animates the legs vertically; the rotation sells the
+                # lateral weight shift.
+                sway = 2.5 * math.sin(t * 6.0)  # ±2.5 degrees
+                painter.translate(PET_SIZE / 2, PET_SIZE / 2)
+                painter.rotate(sway)
+                painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
+            else:
+                mood = _state_to_mood(self._overall)
+                m = MOOD_MOTION[mood]
+                head_bob = m.head_amp * math.sin(t * m.head_freq) + m.head_offset
+                # Yawn only when sleepy -- a busy session has no business
+                # looking drowsy. The helper self-ticks its own schedule.
+                yawn = self.yawn_offset() if mood == MOOD_SLEEPY else 0.0
+                painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob + yawn)
+                painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
 
         pixmap = QPixmap.fromImage(
             QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888)
         )
         painter.drawPixmap(0, 0, pixmap)
         painter.end()
+
+    def _render_walk_frame(self) -> Image.Image:
+        """Composite the current walk frame using a 2-layer skeleton.
+
+        mmx produced one walk frame for luna (walk_1_alpha.png) -- 4
+        coherent frames weren't achievable in this style, so the illusion
+        of walking is built from layer compositing: body stays still,
+        legs oscillate vertically at 6 Hz. The 65% cut is hand-tuned for
+        luna's walk pose; other styles would want a different ratio.
+        """
+        from .sprite_loader import list_walk_frames
+        frames = list_walk_frames(get_active_style())
+        if not frames:
+            # Fallback: no walk frames for this style. Render the mood
+            # art at full body so the pet is still visible while walking.
+            return render_frame(
+                self._overall,
+                self._sessions,
+                time_seconds=time.monotonic() - self._t0,
+                size=PET_SIZE,
+                spot_jitter=self._spot_jitter,
+            )
+        asset = frames[0]  # single walk frame in luna
+        layers = self._walk_layer_cache.get(asset)
+        if layers is None:
+            full = Image.open(asset).convert("RGBA")
+            if full.size != (PET_SIZE, PET_SIZE):
+                full = full.resize((PET_SIZE, PET_SIZE), Image.LANCZOS)
+            cut = int(PET_SIZE * 0.65)
+            body = full.crop((0, 0, PET_SIZE, cut))
+            legs = full.crop((0, cut, PET_SIZE, PET_SIZE))
+            layers = (body, legs, cut)
+            self._walk_layer_cache[asset] = layers
+        body, legs, cut = layers
+
+        t = time.monotonic()
+        leg_dy = int(round(2.0 * math.sin(t * 6.0)))  # ±2 px, 6 Hz
+        out = Image.new("RGBA", (PET_SIZE, PET_SIZE), (0, 0, 0, 0))
+        out.paste(body, (0, 0), body)
+        out.paste(legs, (0, cut + leg_dy), legs)
+        return out
 
     # ---- interaction ---------------------------------------------------
 
@@ -436,7 +515,14 @@ class PetWindow(QWidget):
         return _YAWN_DEPTH * (1.0 - rise / _YAWN_RISE)
 
     def _check_hover(self) -> None:
-        """Update hover state if the cursor moves in/out without an event."""
+        """Update hover state if the cursor moves in/out without an event.
+
+        Also drives the walk-around state machine: the pet notices when
+        the mouse hasn't moved for `walk_idle_threshold` seconds, walks
+        over to where the cursor is parked, and walks back home after
+        a short stay. Only fires when the overall state is calm (idle /
+        exited / unknown) -- busy moods take priority.
+        """
         if self._menu_open or self._fading or not self.isVisible():
             return
         top_left = self.mapToGlobal(QPoint(0, 0))
@@ -449,6 +535,92 @@ class PetWindow(QWidget):
         elif not inside and self._hover:
             self._hover = False
             self._hide_bubble()
+        # Walk-around tick. Tracks mouse movement and advances the
+        # go/stay/return state machine.
+        self._update_walk_state(cursor)
+
+    def _update_walk_state(self, cursor: QPoint) -> None:
+        if self._walk_phase in ("going", "returning"):
+            # Don't update mouse-idle while in motion -- the walk itself
+            # generates position changes that would otherwise count as
+            # "user moved the mouse". An in-flight walk runs to
+            # completion regardless of cursor activity.
+            return
+        # Track cursor idle. A 4 px threshold filters out hand-jitter so
+        # the counter doesn't reset on every sub-pixel sensor blip.
+        if self._last_mouse_pos is None or (
+            cursor - self._last_mouse_pos
+        ).manhattanLength() > 4:
+            self._last_mouse_pos = cursor
+            self._mouse_idle_since = time.monotonic()
+        if self._walk_phase == "staying":
+            if time.monotonic() >= self._stay_until:
+                self._start_walk_back()
+            return
+        # _walk_phase == "idle" -- see if we should start.
+        if self._mouse_idle_since is None:
+            return
+        if time.monotonic() - self._mouse_idle_since < self._walk_idle_threshold:
+            return
+        # Only walk when there's nothing urgent to attend to.
+        if self._overall not in (State.IDLE, State.EXITED, State.UNKNOWN):
+            return
+        self._start_walk_to_mouse()
+
+    def _start_walk_to_mouse(self) -> None:
+        """Begin the trip to where the mouse is parked.
+
+        Records home position, computes the destination (mouse minus half
+        the pet so the cursor sits over the pet's ear, not under its
+        belly), and starts a QPropertyAnimation that moves the window.
+        Walk speed is ~200 px/s so a 600 px trip takes 3s -- slow enough
+        to look like a casual stroll.
+        """
+        if self._last_mouse_pos is None:
+            return
+        self._walk_origin = self.pos()
+        target = QPoint(
+            self._last_mouse_pos.x() - PET_SIZE // 2,
+            self._last_mouse_pos.y() - PET_SIZE // 2,
+        )
+        self._walk_target = target
+        self._walk_phase = "going"
+        self._start_walk_anim(self._walk_origin, target, going=True)
+
+    def _start_walk_back(self) -> None:
+        """Head home from wherever the pet is now."""
+        self._walk_phase = "returning"
+        current = self.pos()
+        self._start_walk_anim(current, self._walk_origin, going=False)
+
+    def _start_walk_anim(self, start: QPoint, end: QPoint, *, going: bool) -> None:
+        if self._walk_anim is not None:
+            self._walk_anim.stop()
+        distance = (end - start).manhattanLength()
+        # Cap at 8s so a long trip doesn't strand the pet mid-screen if
+        # the user is dragging windows around. Floor at 0.6s for short
+        # hops that would otherwise look instant.
+        duration_ms = max(600, min(8000, int(distance * 5)))
+        anim = QPropertyAnimation(self, b"pos")
+        anim.setDuration(duration_ms)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.finished.connect(self._on_walk_finished)
+        self._walk_anim = anim
+        anim.start()
+
+    def _on_walk_finished(self) -> None:
+        if self._walk_phase == "going":
+            # Arrived at the mouse. Park here for a few seconds, then
+            # walk back. Don't reset the mouse-idle timer; the pet will
+            # just walk again if the user is still parked.
+            self._walk_phase = "staying"
+            self._stay_until = time.monotonic() + self._walk_stay_seconds
+        elif self._walk_phase == "returning":
+            self._walk_phase = "idle"
+            self._walk_anim = None
+        # If the walk was interrupted (style switch, etc.) the phase
+        # would already be "idle" -- nothing to do.
 
     # ---- bubble --------------------------------------------------------
 

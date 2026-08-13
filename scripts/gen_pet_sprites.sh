@@ -90,6 +90,20 @@ declare -A STATES=(
   [alert]="very alert wide open eyes looking forward, ears upright and forward, focused"
 )
 
+# Walk cycle frames. Mood-agnostic -- a walking cat doesn't have a "happy
+# walk" vs "sad walk". 4 frames is enough to read as motion at 12 fps; the
+# UI's frame picker handles wraparound. Only luna opts in for now; the
+# other styles don't need walk-around behaviour and shouldn't pay the
+# mmx cost.
+WALK_STYLES=(luna)
+WALK_FRAMES=4
+declare -a WALK_PROMPTS=(
+  "walking forward, front right paw lifted mid-step, weight on back legs"
+  "walking forward, both paws on ground, body level, neutral stride"
+  "walking forward, front left paw lifted mid-step, weight on back legs"
+  "walking forward, both paws on ground, body slightly compressed, mid-stride"
+)
+
 if [ ! -f "$REF" ]; then
   generate_reference
 fi
@@ -98,6 +112,27 @@ for name in "${!STATES[@]}"; do
   generate_one "$name" "${STATES[$name]}"
   strip_white "$STYLE_DIR/${name}.png" "$STYLE_DIR/${name}_alpha.png"
 done
+
+# Walk cycle. Only enabled for styles in WALK_STYLES -- each frame is an
+# mmx call, and most styles don't animate a walk.
+_walk_enabled=0
+for s in "${WALK_STYLES[@]}"; do
+  if [ "$s" = "$STYLE" ]; then _walk_enabled=1; break; fi
+done
+if [ "$_walk_enabled" = "1" ]; then
+  for ((i=0; i<WALK_FRAMES; i++)); do
+    idx=$((i+1))
+    desc="${WALK_PROMPTS[$i]}"
+    out="$STYLE_DIR/walk_$idx.png"
+    echo "==> [$STYLE] walk_$idx"
+    mmx image generate \
+      --prompt "${STYLE_PROMPT}${desc}, plain solid bright neon green background (#00FF00 chroma key green screen), sticker style, single character, full body visible, centered, kawaii style" \
+      --subject-ref "type=character,image=$REF" \
+      --aspect-ratio 1:1 --width 512 --height 512 --seed $((100 + idx)) \
+      --out "$out" >/dev/null
+    strip_white "$out" "$STYLE_DIR/walk_${idx}_alpha.png"
+  done
+fi
 
 echo "Done. Style '$STYLE' at: $STYLE_DIR"
 echo "Activate: pet menu -> 形象 -> $STYLE"
