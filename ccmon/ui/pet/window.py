@@ -320,7 +320,7 @@ class PetWindow(QWidget):
         session needs attention -- a normal idle pet shouldn't fire a jump
         every time the user bumps the cursor.
         """
-        from .win.activate import jump_to_session
+        from ...win.activate import jump_to_session
 
         priority = (State.NEEDS_APPROVAL, State.NEEDS_INPUT, State.DIALOG)
         candidates = [s for s in self._sessions if s.state in priority]
