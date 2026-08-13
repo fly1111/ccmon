@@ -410,16 +410,17 @@ class PetWindow(QWidget):
             state_label = s.state.label
             detail = s.detail or ""
             age = self._age_str(s.updated_at)
-            # Each session is a small block: a coloured dot, the project name
-            # in bold, the state label, the wait time, then the detail line.
-            # The wait time matters because a 5s-old "needs approval" is a
-            # different urgency from a 2-minute-old one.
+            # Last 3 digits of PID, e.g. #860 -- enough to disambiguate
+            # duplicate project names without making the row feel noisy.
+            pid_tag = f"#{s.pid % 1000}"
             rows.append(
                 f"<tr><td style='padding:0 8px 6px 0;vertical-align:top;'>"
                 f"<span style='color:{colour};font-size:13px'>{glyph}</span></td>"
                 f"<td style='padding:0 0 6px 0;vertical-align:top;'>"
                 f"<div style='line-height:1.35'>"
                 f"<span style='font-size:13px;font-weight:600;color:#F5F7FA'>{s.project}</span>"
+                f"  <span style='color:#5C6773;font-size:10px;font-weight:500'>"
+                f"{pid_tag}</span>"
                 f"  <span style='color:{colour};font-size:11px;font-weight:600;"
                 f"text-transform:uppercase;letter-spacing:0.5px'>· {state_label}</span>"
                 f"<span style='color:#5C6773;font-size:11px;margin-left:4px'>· {age}</span>"

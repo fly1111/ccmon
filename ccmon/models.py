@@ -168,12 +168,20 @@ class Session:
 
     @property
     def detail(self) -> str:
-        """One-line explanation of why the session is in its current state."""
+        """One-line explanation of why the session is in its current state.
+
+        For NEEDS_APPROVAL we prefer `activity` (e.g. "Bash: pytest -q") over
+        the raw `waiting_for` ("approve Bash") because the actual command is
+        what the user needs to decide on -- seeing "Bash" alone isn't enough
+        to know whether to allow it.
+        """
         if self.state is State.NEEDS_APPROVAL:
+            if self.activity:
+                return f"需要授权 · {self.activity}"
             wf = (self.waiting_for or "").strip()
             if wf.startswith("approve "):
-                return f"需要授权: {wf[len('approve '):]}"
-            return f"需要授权: {wf or '未知'}"
+                return f"需要授权 · {wf[len('approve '):]}"
+            return f"需要授权 · {wf or '未知'}"
         if self.state is State.CRASHED:
             return "进程已不存在"
         if self.state is State.UNKNOWN:
