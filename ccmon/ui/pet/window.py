@@ -32,6 +32,7 @@ from typing import NamedTuple
 
 from PySide6.QtCore import (
     QPoint,
+    QPropertyAnimation,
     QRect,
     QSize,
     Qt,
@@ -148,6 +149,10 @@ class PetWindow(QWidget):
         # in 100ms after we hide it -- Qt's event loop keeps running through
         # the blocking menu.exec().
         self._menu_open = False
+        # Set while a fade-out animation is in flight, so the 100ms hover
+        # timer doesn't fight the animation by re-showing mid-fade.
+        self._fading = False
+        self._fade_anim: QPropertyAnimation | None = None
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -166,6 +171,10 @@ class PetWindow(QWidget):
         # Accept mouse so hover/drag/menu all work.
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self.setFixedSize(QSize(PET_SIZE, PET_SIZE))
+        # Strong focus so the pet can receive Esc / digit-key shortcuts
+        # while the user is looking at the bubble. The pet is a Tool window
+        # so this doesn't steal activation from the IDE behind it.
+        self.setFocusPolicy(Qt.StrongFocus)
         self._position_on_screen()
 
         # 30 fps repaint. The dog breathes at 1.6 rad/s so even slow blinks
@@ -318,6 +327,52 @@ class PetWindow(QWidget):
                 self._click_timer.stop()
             self._show_menu(event.globalPosition().toPoint())
 
+    def keyPressEvent(self, event) -> None:
+        """Keyboard shortcuts while the bubble is up.
+
+        Esc hides the bubble; 1..9 jumps to the Nth session in priority
+        order. The shortcut set is intentionally tiny -- the bubble is
+        the primary interface, the keys are just for power users who
+        already have the cursor on the pet.
+        """
+        key = event.key()
+        if key == Qt.Key_Escape:
+            self._hide_bubble()
+            event.accept()
+            return
+        if Qt.Key_1 <= key <= Qt.Key_9:
+            idx = key - Qt.Key_1
+            target = self._nth_session_for_jump(idx)
+            if target is not None:
+                from ...win.activate import jump_to_session
+                jump_to_session(target.pid, target.cwd)
+                self._hide_bubble()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _nth_session_for_jump(self, idx: int) -> Session | None:
+        """Pick the idx'th live session in jump priority order.
+
+        Same priority as single-click: NEEDS_APPROVAL first, then
+        NEEDS_INPUT, DIALOG, RUNNING, IDLE, UNKNOWN. Excludes EXITED.
+        """
+        priority = (
+            State.NEEDS_APPROVAL,
+            State.NEEDS_INPUT,
+            State.DIALOG,
+            State.CRASHED,
+            State.RUNNING,
+            State.IDLE,
+            State.UNKNOWN,
+        )
+        rank = {s: i for i, s in enumerate(priority)}
+        live = [s for s in self._sessions if s.state is not State.EXITED]
+        live.sort(key=lambda s: rank.get(s.state, 99))
+        if 0 <= idx < len(live):
+            return live[idx]
+        return None
+
     def _jump_to_attention(self) -> None:
         """Single-click: focus the most-urgent session, if any.
 
@@ -336,7 +391,7 @@ class PetWindow(QWidget):
 
     def _check_hover(self) -> None:
         """Update hover state if the cursor moves in/out without an event."""
-        if self._menu_open or not self.isVisible():
+        if self._menu_open or self._fading or not self.isVisible():
             return
         top_left = self.mapToGlobal(QPoint(0, 0))
         rect = QRect(top_left, self.size())
@@ -389,9 +444,27 @@ class PetWindow(QWidget):
             )
             bubble.setTextFormat(Qt.RichText)
             bubble.setWordWrap(True)
-            bubble.show()
             self._bubble = bubble
+        # Cancel any pending fade-out so a fast mouse-in/mouse-out doesn't
+        # leave the bubble stuck in a half-faded state.
+        if self._fade_anim is not None:
+            self._fade_anim.stop()
+        self._fading = False
         self._refresh_bubble()
+        # Fade in: 0 -> 1 over 150ms. Skip on the very first show (opacity
+        # already 0 from the window's default-until-shown state) -- it
+        # would just delay the user seeing the bubble for no reason.
+        start_opacity = self._bubble.windowOpacity()
+        if start_opacity < 0.99:
+            self._bubble.show()
+            self._fade_anim = QPropertyAnimation(self._bubble, b"windowOpacity")
+            self._fade_anim.setDuration(150)
+            self._fade_anim.setStartValue(start_opacity)
+            self._fade_anim.setEndValue(1.0)
+            self._fade_anim.start()
+        else:
+            # Already visible (state refresh) -- just keep it on.
+            pass
 
     def _refresh_bubble(self) -> None:
         if self._bubble is None:
@@ -404,7 +477,13 @@ class PetWindow(QWidget):
         accent = self._overall.color  # colour the bubble border by overall state
         rows: list[str] = []
         attention = 0
-        for s in sessions:
+        # Cap visible rows so a session explosion (8+ cc tabs) doesn't
+        # produce a 600px bubble that covers half the screen. Overflow goes
+        # to the right-click menu, which lists everything.
+        max_visible = 4
+        visible = sessions[:max_visible]
+        hidden = sessions[max_visible:]
+        for s in visible:
             colour = SPOT_COLORS.get(s.state, "#90A4AE")
             glyph = SPOT_GLYPHS.get(s.state, "●")
             state_label = s.state.label
@@ -431,6 +510,12 @@ class PetWindow(QWidget):
             )
             if s.state.needs_attention:
                 attention += 1
+        if hidden:
+            rows.append(
+                f"<tr><td colspan='2' style='padding:6px 0 0 0;"
+                f"color:#5C6773;font-size:10px;font-style:italic'>"
+                f"+ {len(hidden)} 个未显示，右键菜单查看全部</td></tr>"
+            )
 
         body = (
             "<table cellspacing='0' cellpadding='0' style='border-collapse:collapse'>"
@@ -477,9 +562,34 @@ class PetWindow(QWidget):
             bx = max(geo.left() + 8, min(bx, geo.right() - bw - 8))
             by = max(geo.top() + 8, by)
         self._bubble.move(bx, by)
-        self._bubble.show()
+        # _show_bubble already called show(); this path is for the
+        # update_state -> _refresh_bubble branch where the bubble may not
+        # have been shown yet. Guard against the double-show to keep the
+        # fade animation coherent.
+        if not self._bubble.isVisible():
+            self._bubble.show()
 
     def _hide_bubble(self) -> None:
+        if self._bubble is None or not self._bubble.isVisible():
+            return
+        # Animate opacity to 0, then hide(). _fading blocks the 100ms hover
+        # timer from re-showing mid-animation.
+        if self._fade_anim is not None:
+            self._fade_anim.stop()
+        self._fading = True
+        self._fade_anim = QPropertyAnimation(self._bubble, b"windowOpacity")
+        self._fade_anim.setDuration(150)
+        self._fade_anim.setStartValue(self._bubble.windowOpacity())
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.finished.connect(self._on_fade_out_done)
+        self._fade_anim.start()
+
+    def _on_fade_out_done(self) -> None:
+        # Hide after fade completes, clear the guard so a re-hover can show
+        # the bubble again. Use a guarded hide in case the bubble has
+        # already been replaced by a new one (shouldn't happen, but cheap
+        # to be safe).
+        self._fading = False
         if self._bubble is not None:
             self._bubble.hide()
 
