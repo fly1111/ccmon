@@ -137,6 +137,10 @@ class PetWindow(QWidget):
         self._spot_jitter = int(time.time())  # stable per-launch for spot layout
         self._t0 = time.monotonic()
         self._drag_offset: QPoint | None = None
+        self._press_pos: QPoint | None = None
+        # Pending single-click jump -- fires after doubleClickInterval so a
+        # double-click (open menu) can cancel it before it lands.
+        self._click_timer: QTimer | None = None
         self._hover = False
         self._bubble: QLabel | None = None
         # Cache of rendered frames keyed by State, so paintEvent doesn't
@@ -267,7 +271,17 @@ class PetWindow(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self._drag_offset = event.position().toPoint()
+            pos = event.position().toPoint()
+            self._drag_offset = pos
+            self._press_pos = pos
+            # Schedule the single-click jump. The timer is the gate that lets
+            # mouseDoubleClickEvent cancel the jump before it fires -- a click
+            # is only "really a click" once Qt is sure it isn't the first half
+            # of a double-click.
+            self._click_timer = QTimer(self)
+            self._click_timer.setSingleShot(True)
+            self._click_timer.timeout.connect(self._jump_to_attention)
+            self._click_timer.start(QApplication.doubleClickInterval())
             event.accept()
         elif event.button() == Qt.RightButton:
             self._show_menu(event.globalPosition().toPoint())
@@ -278,12 +292,42 @@ class PetWindow(QWidget):
             event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
-            self._drag_offset = None
+        if event.button() != Qt.LeftButton:
+            return
+        press_pos = self._press_pos
+        self._press_pos = None
+        self._drag_offset = None
+        # If the user dragged (instead of clicking), the jump shouldn't fire.
+        # We cancel the pending timer here rather than letting it run -- if
+        # the cursor travels more than a few pixels between press and release
+        # the user clearly meant to move the pet, not jump.
+        if press_pos is not None and self._click_timer is not None:
+            moved = (event.position().toPoint() - press_pos).manhattanLength() > 5
+            if moved:
+                self._click_timer.stop()
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
+            # Cancel the pending single-click jump before the menu takes over.
+            if self._click_timer is not None:
+                self._click_timer.stop()
             self._show_menu(event.globalPosition().toPoint())
+
+    def _jump_to_attention(self) -> None:
+        """Single-click: focus the most-urgent session, if any.
+
+        Priority order: NEEDS_APPROVAL > NEEDS_INPUT > DIALOG. No-op when no
+        session needs attention -- a normal idle pet shouldn't fire a jump
+        every time the user bumps the cursor.
+        """
+        from .win.activate import jump_to_session
+
+        priority = (State.NEEDS_APPROVAL, State.NEEDS_INPUT, State.DIALOG)
+        candidates = [s for s in self._sessions if s.state in priority]
+        if not candidates:
+            return
+        target = min(candidates, key=lambda s: priority.index(s.state))
+        jump_to_session(target.pid, target.cwd)
 
     def _check_hover(self) -> None:
         """Update hover state if the cursor moves in/out without an event."""
@@ -301,6 +345,20 @@ class PetWindow(QWidget):
             self._hide_bubble()
 
     # ---- bubble --------------------------------------------------------
+
+    @staticmethod
+    def _age_str(ms: int | None) -> str:
+        """Compact "12s / 3m / 1h" for bubble rendering. Mirrors the CLI's _age."""
+        if not ms:
+            return ""
+        delta = max(0.0, time.time() - ms / 1000.0)
+        if delta < 60:
+            return f"{int(delta)}s"
+        if delta < 3600:
+            return f"{int(delta // 60)}m"
+        if delta < 86400:
+            return f"{int(delta // 3600)}h{int(delta % 3600 // 60)}m"
+        return f"{int(delta // 86400)}d"
 
     def _show_bubble(self) -> None:
         if not self._sessions:
@@ -346,9 +404,11 @@ class PetWindow(QWidget):
             glyph = SPOT_GLYPHS.get(s.state, "●")
             state_label = s.state.label
             detail = s.detail or ""
+            age = self._age_str(s.updated_at)
             # Each session is a small block: a coloured dot, the project name
-            # in bold, the state label, then the detail on the next line in
-            # muted colour indented to match the dot.
+            # in bold, the state label, the wait time, then the detail line.
+            # The wait time matters because a 5s-old "needs approval" is a
+            # different urgency from a 2-minute-old one.
             rows.append(
                 f"<tr><td style='padding:0 8px 6px 0;vertical-align:top;'>"
                 f"<span style='color:{colour};font-size:13px'>{glyph}</span></td>"
@@ -357,6 +417,7 @@ class PetWindow(QWidget):
                 f"<span style='font-size:13px;font-weight:600;color:#F5F7FA'>{s.project}</span>"
                 f"  <span style='color:{colour};font-size:11px;font-weight:600;"
                 f"text-transform:uppercase;letter-spacing:0.5px'>· {state_label}</span>"
+                f"<span style='color:#5C6773;font-size:11px;margin-left:4px'>· {age}</span>"
                 f"</div>"
                 f"<div style='color:#9AA5B1;font-size:11px;line-height:1.35;"
                 f"margin-top:1px'>{detail}</div>"
@@ -370,9 +431,12 @@ class PetWindow(QWidget):
             + "".join(rows)
             + "</table>"
         )
-        footer_text = f"{len(sessions)} 个会话"
+        footer_count = f"{len(sessions)} 个会话"
         if attention:
-            footer_text += f"  ·  <span style='color:{accent};font-weight:600'>{attention} 个需关注</span>"
+            footer_count += (
+                f"  ·  <span style='color:{accent};font-weight:600'>"
+                f"{attention} 个需关注</span>"
+            )
         # 6px coloured left bar done by wrapping content in a 1x1 coloured
         # table with the dark panel as its right cell.
         html = (
@@ -386,7 +450,9 @@ class PetWindow(QWidget):
             f"{body}"
             f"<div style='margin-top:8px;padding-top:8px;"
             f"border-top:1px solid #2E333B;color:#7A8593;font-size:11px'>"
-            f"{footer_text}</div>"
+            f"{footer_count}</div>"
+            f"<div style='margin-top:4px;color:#5C6773;font-size:10px'>"
+            f"单击跳到最紧急  ·  双击打开菜单  ·  右键菜单</div>"
             "</td></tr></table>"
         )
         self._bubble.setText(html)
@@ -414,6 +480,11 @@ class PetWindow(QWidget):
     # ---- menu ----------------------------------------------------------
 
     def _show_menu(self, global_pos: QPoint) -> None:
+        # The hover bubble and the right-click menu both appear at roughly the
+        # same spot and would stack on top of each other. Hide the bubble for
+        # the duration of the menu; _check_hover will re-show it once the menu
+        # closes and the cursor is still over the pet.
+        self._hide_bubble()
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu{padding:6px;}"
