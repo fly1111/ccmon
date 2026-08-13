@@ -79,21 +79,20 @@ def _state_to_mood(state: State) -> str:
 
 
 class _MoodMotion(NamedTuple):
-    breathe_amp: float   # scale amplitude (e.g. 0.02 = +/-2 %)
-    breathe_freq: float  # rad/s
     head_amp: float      # pixel amplitude
     head_freq: float     # rad/s
     head_offset: float   # constant drop (sad sits lower)
 
 
-# Same motion vocabulary as fallback_sprite.paint() so AI pets feel alive
-# without a competing animation language.
+# Per-mood head motion. We deliberately skip the full-body breathing scale
+# that the _builtin dalmatian uses -- it read as "jelly wobble" on AI
+# sprites. Head bob alone gives mood without distorting the art.
 MOOD_MOTION: dict[str, _MoodMotion] = {
-    MOOD_HAPPY:   _MoodMotion(0.020, 1.6, 0.5,  3.0,  0.0),
-    MOOD_ANXIOUS: _MoodMotion(0.040, 8.0, 2.0, 10.0,  0.0),
-    MOOD_ALERT:   _MoodMotion(0.020, 2.5, 0.5,  4.0,  0.0),
-    MOOD_SLEEPY:  _MoodMotion(0.015, 1.0, 2.5,  1.0,  0.0),
-    MOOD_SAD:     _MoodMotion(0.005, 1.0, 0.5,  1.0, -2.0),
+    MOOD_HAPPY:   _MoodMotion(0.5,  3.0,  0.0),
+    MOOD_ANXIOUS: _MoodMotion(2.0, 10.0,  0.0),
+    MOOD_ALERT:   _MoodMotion(0.5,  4.0,  0.0),
+    MOOD_SLEEPY:  _MoodMotion(2.5,  1.0,  0.0),
+    MOOD_SAD:     _MoodMotion(0.5,  1.0, -2.0),
 }
 
 # Crossfade duration when the overall state changes.
@@ -246,10 +245,8 @@ class PetWindow(QWidget):
         if use_transform:
             mood = _state_to_mood(self._overall)
             m = MOOD_MOTION[mood]
-            breathe = 1.0 + m.breathe_amp * math.sin(t * m.breathe_freq)
             head_bob = m.head_amp * math.sin(t * m.head_freq) + m.head_offset
             painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob)
-            painter.scale(breathe, breathe)
             painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
 
         pixmap = QPixmap.fromImage(
@@ -482,4 +479,7 @@ class PetWindow(QWidget):
     def _switch_style(self, name: str) -> None:
         from .sprite_loader import set_active_style
         set_active_style(name)
+        # Drop the per-State frame cache so the next paintEvent reloads
+        # from the new style's PNGs instead of replaying the old style.
+        self._image_cache.clear()
         self.style_changed.emit(name)
