@@ -13,7 +13,14 @@
 
 set -euo pipefail
 
-DATA_DIR="$(powershell -NoProfile -Command "[Environment]::GetFolderPath('LocalApplicationData')" | tr -d '\r')/ccmon/assets/pet"
+# Default: write under the repo's assets/pet/ so styles ship via git.
+# Override with CCMON_PET_DIR=<path> if you want the old user-local behaviour.
+if [ -n "${CCMON_PET_DIR:-}" ]; then
+  DATA_DIR="${CCMON_PET_DIR}"
+else
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  DATA_DIR="$REPO_ROOT/assets/pet"
+fi
 mkdir -p "$DATA_DIR"
 
 STYLE="${1:-peter}"
@@ -23,8 +30,17 @@ STYLE="${1:-peter}"
 declare -A STYLE_PROMPTS=(
   [peter]="Strong male dalmatian dog, stocky muscular build, thick neck, broad chest, large head, big paws, masculine features, white fur with bold black spots, dark brown nose, "
   [peter2]="Cute chibi dalmatian puppy sitting facing forward, soft white fur with sparse black spots, big round black eyes with white highlights, brown nose, pink blush on cheeks, friendly neutral expression, "
+  [luna]="Shandong lion cat (Chinese lion cat), female, lithe slender elegant body, long flowing pure white fur with thick lion-like mane ruff around neck and chest, regal imperious bearing, icy cold stare with half-lidded piercing ice-blue almond eyes, pink nose, long plumed fluffy tail, "
 )
 STYLE_PROMPT="${STYLE_PROMPTS[$STYLE]:-}"
+
+# Style-specific state-image modifiers. Styles not listed fall through to
+# the default (which includes "kawaii style"). Use this to override the
+# hardcoded kawaii default for serious/realistic looks.
+declare -A STATE_MODIFIERS=()
+DEFAULT_STATE_MODIFIER="sticker style, single character, full body visible, centered, kawaii style"
+STATE_MODIFIER="${STATE_MODIFIERS[$STYLE]:-$DEFAULT_STATE_MODIFIER}"
+
 PROMPT_ADD="${2:-}"
 
 if [ "$STYLE" = "builtin" ] || [ "$STYLE" = "_builtin" ]; then
@@ -52,7 +68,7 @@ generate_one() {
   local out="$STYLE_DIR/${name}.png"
   echo "==> [$STYLE] $name"
   mmx image generate \
-    --prompt "${STYLE_PROMPT}${desc}, plain solid bright neon green background (#00FF00 chroma key green screen), sticker style, single character, full body visible, centered, kawaii style" \
+    --prompt "${STYLE_PROMPT}${desc}, plain solid bright neon green background (#00FF00 chroma key green screen), ${STATE_MODIFIER}" \
     --subject-ref "type=character,image=$REF" \
     --aspect-ratio 1:1 --width 512 --height 512 --seed "${SEED:-42}" \
     --out "$out" >/dev/null

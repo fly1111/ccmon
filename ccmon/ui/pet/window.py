@@ -23,10 +23,12 @@ The pet never invents input. It only observes the engine and repaints.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from PySide6.QtCore import (
     QPoint,
@@ -46,12 +48,56 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QStyle, QWidget
 
+from PIL import Image
+
 from ...models import Session, State
-from .sprite_loader import render_frame
+from .sprite_loader import BUILTIN_STYLE, get_active_style, render_frame
 
 log = logging.getLogger(__name__)
 
 PET_SIZE = 192
+
+# ---- mood mapping (mirrors fallback_sprite._state_to_mood) ----------
+MOOD_HAPPY = "happy"
+MOOD_ANXIOUS = "anxious"
+MOOD_SAD = "sad"
+MOOD_SLEEPY = "sleepy"
+MOOD_ALERT = "alert"
+
+
+def _state_to_mood(state: State) -> str:
+    """Engine State -> mood file name. Same rule as sprite_loader."""
+    if state is State.NEEDS_APPROVAL:
+        return MOOD_ANXIOUS
+    if state is State.CRASHED:
+        return MOOD_SAD
+    if state in (State.NEEDS_INPUT, State.DIALOG):
+        return MOOD_ALERT
+    if state in (State.IDLE, State.EXITED, State.UNKNOWN):
+        return MOOD_SLEEPY
+    return MOOD_HAPPY
+
+
+class _MoodMotion(NamedTuple):
+    breathe_amp: float   # scale amplitude (e.g. 0.02 = +/-2 %)
+    breathe_freq: float  # rad/s
+    head_amp: float      # pixel amplitude
+    head_freq: float     # rad/s
+    head_offset: float   # constant drop (sad sits lower)
+
+
+# Same motion vocabulary as fallback_sprite.paint() so AI pets feel alive
+# without a competing animation language.
+MOOD_MOTION: dict[str, _MoodMotion] = {
+    MOOD_HAPPY:   _MoodMotion(0.020, 1.6, 0.5,  3.0,  0.0),
+    MOOD_ANXIOUS: _MoodMotion(0.040, 8.0, 2.0, 10.0,  0.0),
+    MOOD_ALERT:   _MoodMotion(0.020, 2.5, 0.5,  4.0,  0.0),
+    MOOD_SLEEPY:  _MoodMotion(0.015, 1.0, 2.5,  1.0,  0.0),
+    MOOD_SAD:     _MoodMotion(0.005, 1.0, 0.5,  1.0, -2.0),
+}
+
+# Crossfade duration when the overall state changes.
+TRANSITION_SECONDS = 0.4
 SPOT_GLYPHS: dict[State, str] = {
     State.RUNNING: "●",
     State.NEEDS_APPROVAL: "●",
@@ -94,6 +140,13 @@ class PetWindow(QWidget):
         self._drag_offset: QPoint | None = None
         self._hover = False
         self._bubble: QLabel | None = None
+        # Cache of rendered frames keyed by State, so paintEvent doesn't
+        # re-open the PNG (or re-paint the builtin dalmatian) every tick.
+        self._image_cache: dict[State, Image.Image] = {}
+        # Crossfade state -- when overall changes, blend old and new for a
+        # short window so AI-style swaps don't snap.
+        self._prev_overall: State | None = None
+        self._transition_start: float = 0.0
 
         self.setWindowFlags(
             Qt.FramelessWindowHint
@@ -137,6 +190,9 @@ class PetWindow(QWidget):
             self._sessions = sessions
         else:
             self._sessions = tuple(sessions)  # type: ignore[arg-type]
+        if state != self._overall:
+            self._prev_overall = self._overall
+            self._transition_start = time.monotonic()
         self._overall = state
         if self._hover:
             self._refresh_bubble()
@@ -145,15 +201,57 @@ class PetWindow(QWidget):
 
     def paintEvent(self, _event) -> None:
         t = time.monotonic() - self._t0
-        image = render_frame(
-            self._overall,
-            self._sessions,
-            time_seconds=t,
-            size=PET_SIZE,
-            spot_jitter=self._spot_jitter,
-        )
+        image = self._image_cache.get(self._overall)
+        if image is None:
+            image = render_frame(
+                self._overall,
+                self._sessions,
+                time_seconds=t,
+                size=PET_SIZE,
+                spot_jitter=self._spot_jitter,
+            )
+            self._image_cache[self._overall] = image
+
+        # Crossfade old -> new while inside the transition window. Skip the
+        # motion transform during the fade so both sprites render at rest;
+        # otherwise the jittery mood would clash with the previous mood's pose.
+        in_transition = False
+        if (
+            self._prev_overall is not None
+            and self._prev_overall != self._overall
+        ):
+            elapsed = time.monotonic() - self._transition_start
+            if elapsed < TRANSITION_SECONDS:
+                in_transition = True
+                prev = self._image_cache.get(self._prev_overall)
+                if prev is None:
+                    prev = render_frame(
+                        self._prev_overall,
+                        self._sessions,
+                        time_seconds=t,
+                        size=PET_SIZE,
+                        spot_jitter=self._spot_jitter,
+                    )
+                    self._image_cache[self._prev_overall] = prev
+                alpha = elapsed / TRANSITION_SECONDS
+                image = Image.blend(prev, image, alpha)
+
+        # _builtin paints motion inside the image; AI styles are static PNGs,
+        # so we apply per-mood transform ourselves.
+        use_transform = get_active_style() != BUILTIN_STYLE and not in_transition
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+
+        if use_transform:
+            mood = _state_to_mood(self._overall)
+            m = MOOD_MOTION[mood]
+            breathe = 1.0 + m.breathe_amp * math.sin(t * m.breathe_freq)
+            head_bob = m.head_amp * math.sin(t * m.head_freq) + m.head_offset
+            painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob)
+            painter.scale(breathe, breathe)
+            painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
+
         pixmap = QPixmap.fromImage(
             QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888)
         )
