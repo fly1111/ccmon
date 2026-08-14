@@ -335,14 +335,13 @@ class PetWindow(QWidget):
         chroma key) and cycled at WALK_FPS. Loaded images are cached on
         first use; we don't reload the same frame 30 times a second.
 
-        Default going direction is LEFT (set by the user). The saved
-        walk frame should already face left -- gen_pet_sprites.sh
-        mirrors all walk frames after generation. window.py applies
-        an extra flip on the return trip so the cat faces the opposite
-        direction while walking back. The flip is cached per (asset,
-        flipped) so the mirror happens at most once per frame.
+        The saved walk frame for each style already faces the desired
+        "going" direction (gen_pet_sprites.sh mirrors after generation).
+        On the return trip we mirror the image so the cat faces the
+        opposite way; the mirror is cached per (asset, flipped) so it
+        happens at most once per frame.
         """
-        from .sprite_loader import list_walk_frames, walk_faces_going, WALK_FPS
+        from .sprite_loader import list_walk_frames, WALK_FPS
         frames = list_walk_frames(get_active_style())
         if not frames:
             # No walk cycle for this style -- render the mood art instead
@@ -356,18 +355,14 @@ class PetWindow(QWidget):
             )
         idx = int(time.monotonic() * WALK_FPS) % len(frames)
         asset = frames[idx]
-        # Going phase wants facing-direction = left. Returning phase
-        # wants right (mirror the saved image). A flip is needed unless
-        # the saved image already faces the going direction.
-        returning = self._walk_phase == "returning"
-        need_flip = returning != walk_faces_going(get_active_style())
-        cache_key = (asset, need_flip)
+        flipped = self._walk_phase == "returning"
+        cache_key = (asset, flipped)
         image = self._walk_frame_cache.get(cache_key)
         if image is None:
             image = Image.open(asset).convert("RGBA")
             if image.size != (PET_SIZE, PET_SIZE):
                 image = image.resize((PET_SIZE, PET_SIZE), Image.LANCZOS)
-            if need_flip:
+            if flipped:
                 image = ImageOps.mirror(image)
             self._walk_frame_cache[cache_key] = image
         return image

@@ -41,34 +41,6 @@ MOOD_WALKING = "walking"
 WALK_FRAMES_PREFIX = "walk_"
 WALK_FPS = 12  # 4 frames at 12 fps = 3 fps perceived, comfortable for a cat
 
-# Default: all styles face LEFT. gen_pet_sprites.sh mirrors the walk
-# frames after generation so the saved image already faces the desired
-# "going" direction. window.py reads `walk_faces_going` to decide
-# whether to apply an extra flip at render time:
-#   - going phase: need facing-direction = LEFT (default). If saved
-#     image faces left, no flip; if right, mirror.
-#   - returning phase: facing-direction = RIGHT. Mirror relative to
-#     the going direction.
-#
-# Per-style overrides are for styles that, for whatever reason, came
-# out facing the other way.
-WALK_FACES_GOING: dict[str, bool] = {
-    # luna's saved walk frames face LEFT (gen script mirrored them
-    # after generation, per the default policy).
-    "luna": True,
-    # peter2's saved walk frames also face LEFT (gen script mirrored
-    # them). luna and peter2 share the same convention.
-    "peter2": True,
-}
-
-
-def walk_faces_going(style: str) -> bool:
-    """True when the saved walk frames for `style` already face the
-    desired going direction (LEFT, by default). PetWindow uses this
-    to skip the extra flip on the way out.
-    """
-    return WALK_FACES_GOING.get(style, True)
-
 
 @dataclass
 class StyleInfo:
