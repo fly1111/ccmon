@@ -188,7 +188,7 @@ class PetWindow(QWidget):
         # once per frame (the cut is at a fixed ratio) and reused every
         # paint tick -- a crop is cheap but doing it 30 times a second
         # for the same image is wasted work.
-        self._walk_layer_cache: dict = {}
+        self._walk_frame_cache: dict = {}
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -307,14 +307,11 @@ class PetWindow(QWidget):
 
         if use_transform:
             if self._walk_phase in ("going", "returning"):
-                # Walk: body sway via rotation, no head-bob / yawn.
-                # Layer compositing inside _render_walk_frame already
-                # animates the legs vertically; the rotation sells the
-                # lateral weight shift.
-                sway = 2.5 * math.sin(t * 6.0)  # ±2.5 degrees
-                painter.translate(PET_SIZE / 2, PET_SIZE / 2)
-                painter.rotate(sway)
-                painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
+                # Walk frames already carry motion; do NOT rotate or
+                # translate them -- the mmx video was rendered assuming
+                # a fixed camera, and any extra transform distorts the
+                # legs / head in a way that breaks the cycle.
+                pass
             else:
                 mood = _state_to_mood(self._overall)
                 m = MOOD_MOTION[mood]
@@ -332,19 +329,17 @@ class PetWindow(QWidget):
         painter.end()
 
     def _render_walk_frame(self) -> Image.Image:
-        """Composite the current walk frame using a 2-layer skeleton.
+        """Pick the current walk-cycle frame for the active style.
 
-        mmx produced one walk frame for luna (walk_1_alpha.png) -- 4
-        coherent frames weren't achievable in this style, so the illusion
-        of walking is built from layer compositing: body stays still,
-        legs oscillate vertically at 6 Hz. The 65% cut is hand-tuned for
-        luna's walk pose; other styles would want a different ratio.
+        Walk frames are pre-rendered PNGs (mmx video -> ffmpeg -> per-frame
+        chroma key) and cycled at WALK_FPS. Loaded images are cached on
+        first use; we don't reload the same frame 30 times a second.
         """
         from .sprite_loader import list_walk_frames
         frames = list_walk_frames(get_active_style())
         if not frames:
-            # Fallback: no walk frames for this style. Render the mood
-            # art at full body so the pet is still visible while walking.
+            # No walk cycle for this style -- render the mood art instead
+            # so the pet stays visible while walking.
             return render_frame(
                 self._overall,
                 self._sessions,
@@ -352,25 +347,16 @@ class PetWindow(QWidget):
                 size=PET_SIZE,
                 spot_jitter=self._spot_jitter,
             )
-        asset = frames[0]  # single walk frame in luna
-        layers = self._walk_layer_cache.get(asset)
-        if layers is None:
-            full = Image.open(asset).convert("RGBA")
-            if full.size != (PET_SIZE, PET_SIZE):
-                full = full.resize((PET_SIZE, PET_SIZE), Image.LANCZOS)
-            cut = int(PET_SIZE * 0.65)
-            body = full.crop((0, 0, PET_SIZE, cut))
-            legs = full.crop((0, cut, PET_SIZE, PET_SIZE))
-            layers = (body, legs, cut)
-            self._walk_layer_cache[asset] = layers
-        body, legs, cut = layers
-
-        t = time.monotonic()
-        leg_dy = int(round(2.0 * math.sin(t * 6.0)))  # ±2 px, 6 Hz
-        out = Image.new("RGBA", (PET_SIZE, PET_SIZE), (0, 0, 0, 0))
-        out.paste(body, (0, 0), body)
-        out.paste(legs, (0, cut + leg_dy), legs)
-        return out
+        from .sprite_loader import WALK_FPS
+        idx = int(time.monotonic() * WALK_FPS) % len(frames)
+        asset = frames[idx]
+        image = self._walk_frame_cache.get(asset)
+        if image is None:
+            image = Image.open(asset).convert("RGBA")
+            if image.size != (PET_SIZE, PET_SIZE):
+                image = image.resize((PET_SIZE, PET_SIZE), Image.LANCZOS)
+            self._walk_frame_cache[asset] = image
+        return image
 
     # ---- interaction ---------------------------------------------------
 
