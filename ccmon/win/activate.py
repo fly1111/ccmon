@@ -131,20 +131,52 @@ def _ancestors(pid: int, *, max_depth: int = 10) -> list[int]:
     return chain
 
 
-def _wt_for_session(pid: int) -> int | None:
-    """Find the WindowsTerminal.exe (or wt.exe) PID that owns the
-    console for `pid`.
+def _console_hwnd_for_pid(pid: int) -> int:
+    """Return the Win32 console window hwnd owned by `pid`, or 0.
 
-    WT sets the WT_SESSION env var on every shell it spawns; the
-    WT process itself doesn't have one. Find the WT process whose
-    descendant chain (recursively) contains a process whose
-    WT_SESSION matches `pid`'s WT_SESSION.
-
-    Needed because in ConPTY mode the shell's parent is
-    services.exe, not wt.exe -- a plain psutil parent walk would
-    miss wt entirely. This is the difference between jumping to
-    the right WT tab and jumping to whichever WT was focused last.
+    Uses AttachConsole(pid) + GetConsoleWindow. The process's
+    console window is the WT tab / cmd / powershell / ConPTY in
+    which it lives, regardless of psutil's parent chain. Freeing
+    and re-attaching the calling process's own console around
+    the call keeps ccmon's own console intact.
     """
+    kernel32 = ctypes.windll.kernel32
+    orig_hwnd = kernel32.GetConsoleWindow()
+    try:
+        if orig_hwnd:
+            kernel32.FreeConsole()
+        if not kernel32.AttachConsole(pid):
+            return 0
+        hwnd = kernel32.GetConsoleWindow()
+        return hwnd
+    finally:
+        # Detach from target console and re-attach to our own.
+        kernel32.FreeConsole()
+        if orig_hwnd:
+            kernel32.AttachConsole(0xFFFFFFFF)  # ATTACH_PARENT_PROCESS
+
+
+def _wt_for_session(pid: int) -> int | None:
+    """Find the WindowsTerminal.exe (or wt.exe) PID hosting this pid.
+
+    Strategy cascade:
+      1. Win32 AttachConsole + GetConsoleWindow on `pid` directly.
+         This is the only fully reliable method -- it returns the
+         actual console hwnd regardless of who owns the parent
+         chain (ConPTY in particular detaches the shell from wt
+         in psutil's view).
+      2. WT_SESSION env-var lookup. Useful as a fallback for
+         callers that can't AttachConsole.
+    """
+    # Strategy 1: direct console hwnd -> process pid
+    hwnd = _console_hwnd_for_pid(pid)
+    if hwnd:
+        owner_pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+        if owner_pid.value:
+            return owner_pid.value
+
+    # Strategy 2: env-var WT_SESSION on every wt.exe's descendants
     try:
         proc = psutil.Process(pid)
         target_session = proc.environ().get("WT_SESSION")
