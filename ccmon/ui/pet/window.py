@@ -201,6 +201,18 @@ class PetWindow(QWidget):
         self._last_active_at: float = time.monotonic()
         self._last_cursor_pos: QPoint | None = QCursor.pos()
         self._sleep_idle_seconds: float = 300.0  # 5 min
+        # Laser pointer mode: when the cursor moves fast enough we paint
+        # a small red dot at its on-canvas position -- the "laser
+        # pointer" toy. After 1s of slow movement the dot fades. This
+        # gives the cursor a way to draw the pet's attention without
+        # triggering a 5s-idle walk.
+        self._laser_mode: bool = False
+        self._laser_pos_global: QPoint | None = None  # in screen coords
+        self._laser_slow_since: float = 0.0
+        self._laser_speed_threshold: float = 800.0  # px/s
+        self._laser_slow_seconds: float = 1.0
+        self._laser_prev_pos: QPoint | None = None
+        self._laser_prev_time: float | None = None
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -353,6 +365,14 @@ class PetWindow(QWidget):
             painter.setFont(QFont("Segoe UI Emoji", 16))
             painter.drawText(PET_SIZE - 36, 28, "Zzz")
             painter.setOpacity(1.0)
+        # Laser pointer: a small red dot at the cursor's on-canvas
+        # position. Drawn last so it sits on top of the pet.
+        if self._laser_mode and self._laser_pos_global is not None:
+            local = self.mapFromGlobal(self._laser_pos_global)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setBrush(QColor(255, 50, 50, 220))
+            painter.setPen(QColor(255, 200, 200, 255))
+            painter.drawEllipse(local.x() - 6, local.y() - 6, 12, 12)
         painter.end()
 
     def _render_walk_frame(self) -> Image.Image:
@@ -599,6 +619,26 @@ class PetWindow(QWidget):
         elif not self._sleeping and time.monotonic() - self._last_active_at > self._sleep_idle_seconds:
             self._sleeping = True
             self.update()
+        # Laser pointer tick. Speed = distance / time between two
+        # 100ms polls. Above threshold -> enable; below for >1s -> disable.
+        now = time.monotonic()
+        if self._laser_prev_pos is not None and self._laser_prev_time is not None:
+            dt = now - self._laser_prev_time
+            if dt > 0:
+                dist = (cursor - self._laser_prev_pos).manhattanLength()
+                speed = dist / dt
+                if speed > self._laser_speed_threshold:
+                    self._laser_mode = True
+                    self._laser_pos_global = cursor
+                    self._laser_slow_since = 0.0
+                elif self._laser_mode:
+                    if self._laser_slow_since == 0.0:
+                        self._laser_slow_since = now
+                    elif now - self._laser_slow_since > self._laser_slow_seconds:
+                        self._laser_mode = False
+                        self._laser_slow_since = 0.0
+        self._laser_prev_pos = cursor
+        self._laser_prev_time = now
 
     def _update_walk_state(self, cursor: QPoint) -> None:
         if self._walk_phase in ("going", "returning"):
