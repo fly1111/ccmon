@@ -1042,12 +1042,21 @@ class PetWindow(QWidget):
         bw = self._bubble.width()
         bh = self._bubble.height()
         bx = top_left.x() + (self.width() - bw) // 2
-        by = top_left.y() - bh - 10
+        # Bubble below the pet rather than above: when the pet sits near
+        # the top of the screen, an above-bubble can run off the top edge
+        # and ALSO overlaps the top half of the pet, blocking the drag
+        # affordance. A below-bubble leaves the entire pet area clean
+        # for hover/drag.
+        by = top_left.y() + PET_SIZE + 10
         screen = QGuiApplication.screenAt(top_left) or QGuiApplication.primaryScreen()
         if screen is not None:
             geo = screen.availableGeometry()
             bx = max(geo.left() + 8, min(bx, geo.right() - bw - 8))
-            by = max(geo.top() + 8, by)
+            # Flip above the pet if there's no room below.
+            if by + bh > geo.bottom() - 8:
+                by = top_left.y() - bh - 10
+            else:
+                by = max(geo.top() + 8, by)
         self._bubble.move(bx, by)
         # _show_bubble already called show(); this path is for the
         # update_state -> _refresh_bubble branch where the bubble may not
