@@ -235,17 +235,16 @@ def focus_window(hwnd: int) -> bool:
 
 def jump_to_session(pid: int, cwd: str) -> bool:
     """Resolve and focus. Returns True if we actually moved a window."""
-    # 0. WT-specific: find the right wt.exe for this session's
-    #    WT_SESSION. Necessary because in ConPTY mode the shell's
-    #    parent is services.exe, not wt.exe, so a plain psutil parent
-    #    walk would never reach wt. Without this we fall through to
-    #    stage 3's "any visible window with the cwd in its title" and
-    #    jump to whichever WT was focused last.
-    wt_pid = _wt_for_session(pid)
-    if wt_pid:
-        window = _resolve_window_for_pid(wt_pid, cwd=cwd)
-        if window:
-            return focus_window(window.hwnd)
+    # 0. Direct console focus: AttachConsole to the target PID and
+    #    focus its console window. This is the only way to reliably
+    #    distinguish multiple tabs in the same WindowsTerminal
+    #    instance -- all tabs share one wt.exe pid, so PID-based
+    #    matching can't tell them apart, but each tab has its own
+    #    console hwnd.
+    hwnd = _console_hwnd_for_pid(pid)
+    if hwnd:
+        if focus_window(hwnd):
+            return True
 
     # 1. IDE lock fast path
     binding = match_ide_for_session(cwd)
@@ -263,7 +262,15 @@ def jump_to_session(pid: int, cwd: str) -> bool:
         if window:
             return focus_window(window.hwnd)
 
-    # 3. Title fallback: any visible window whose title contains the cwd's basename.
+    # 3. WT_SESSION fallback (when AttachConsole refused -- rare;
+    #    the target is in a different logon session).
+    wt_pid = _wt_for_session(pid)
+    if wt_pid:
+        window = _resolve_window_for_pid(wt_pid, cwd=cwd)
+        if window:
+            return focus_window(window.hwnd)
+
+    # 4. Title fallback: any visible window whose title contains the cwd's basename.
     if cwd:
         needle = os.path.basename(cwd.replace("/", "\\").rstrip("\\")).casefold()
         if needle:
@@ -272,7 +279,7 @@ def jump_to_session(pid: int, cwd: str) -> bool:
                     if focus_window(window.hwnd):
                         return True
 
-    # 4. Last resort: open the project folder.
+    # 5. Last resort: open the project folder.
     if cwd and os.path.isdir(cwd):
         try:
             subprocess.Popen(["explorer", cwd])
