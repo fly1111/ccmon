@@ -191,12 +191,12 @@ def _wt_for_session(pid: int) -> int | None:
         ]
     except psutil.Error:
         return None
-    for wt in wt_candidates:
+    for wt_proc in wt_candidates:
         try:
-            for child in wt.children(recursive=True):
+            for child in wt_proc.children(recursive=True):
                 try:
                     if child.environ().get("WT_SESSION") == target_session:
-                        return wt.pid
+                        return wt_proc.pid
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
         except (psutil.NoSuchProcess, psutil.AccessDenied):
