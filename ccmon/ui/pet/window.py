@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from PySide6.QtCore import (
+    QEasingCurve,
     QPoint,
     QPropertyAnimation,
     QRect,
@@ -196,6 +197,14 @@ class PetWindow(QWidget):
         # audio yet (sound comes in Phase 5).
         self._petting: bool = False
         self._long_press_timer: QTimer | None = None
+        # Auto-avoid: when the foreground window covers >50% of the pet,
+        # the pet jumps to the screen edge farthest from the covering
+        # window. A 1s poll is enough; the user can drag a window over
+        # the pet and it'll move out of the way almost immediately.
+        self._avoid_timer: QTimer | None = None
+        self._avoid_anim: QPropertyAnimation | None = None
+        self._last_avoid_at: float = 0.0
+        self._avoid_cooldown: float = 2.0  # seconds between auto-jumps
         # Sleep mode: 5 minutes of cursor-idle (no movement, not even
         # micro-jitter) drops the pet into sleep. Cursor activity wakes
         # it. Detected in _check_hover which already runs every 100ms.
@@ -245,6 +254,13 @@ class PetWindow(QWidget):
         self._animation_timer.setTimerType(Qt.PreciseTimer)
         self._animation_timer.timeout.connect(self.update)
         self._animation_timer.start(1000 // 30)
+
+        # Auto-avoid: poll for the foreground window covering us and
+        # jump to a screen edge when it does. 1s poll is enough resolution
+        # for "user dragged a window over the pet" workflows.
+        self._avoid_timer = QTimer(self)
+        self._avoid_timer.timeout.connect(self._check_avoid)
+        self._avoid_timer.start(1000)
 
         # Hover detection -- track the cursor globally so the bubble shows
         # whenever the cursor is over the dog, not just on a hover event.
@@ -586,6 +602,58 @@ class PetWindow(QWidget):
             return _YAWN_DEPTH
         rise = elapsed - _YAWN_SINK - _YAWN_HOLD
         return _YAWN_DEPTH * (1.0 - rise / _YAWN_RISE)
+
+    def _check_avoid(self) -> None:
+        """Poll the foreground window; jump if it covers us.
+
+        Uses Win32 GetForegroundWindow + GetWindowRect. We exclude our
+        own window so clicking the pet doesn't make it dodge itself.
+        """
+        if not self.isVisible():
+            return
+        import ctypes
+        from ctypes import wintypes
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd or hwnd == int(self.winId()):
+            return
+        rect = wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        fg = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+        pet = QRect(self.pos(), self.size())
+        inter = fg.intersected(pet)
+        if inter.isEmpty():
+            return
+        if inter.width() * inter.height() < pet.width() * pet.height() * 0.5:
+            return
+        now = time.monotonic()
+        if now - self._last_avoid_at < self._avoid_cooldown:
+            return
+        self._last_avoid_at = now
+        self._jump_to_edge_away_from(fg.center())
+
+    def _jump_to_edge_away_from(self, blocker_center: QPoint) -> None:
+        """Animate the pet to the screen edge farthest from a point."""
+        screen = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        # Pick the corner of the screen that maximizes distance from blocker
+        corners = [
+            QPoint(geo.left() + 24, geo.top() + 24),
+            QPoint(geo.right() - self.width() - 24, geo.top() + 24),
+            QPoint(geo.left() + 24, geo.bottom() - self.height() - 24),
+            QPoint(geo.right() - self.width() - 24, geo.bottom() - self.height() - 24),
+        ]
+        target = max(corners, key=lambda c: (c - blocker_center).manhattanLength())
+        if self._avoid_anim is not None:
+            self._avoid_anim.stop()
+        anim = QPropertyAnimation(self, b"pos")
+        anim.setDuration(300)
+        anim.setStartValue(self.pos())
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._avoid_anim = anim
+        anim.start()
 
     def _check_hover(self) -> None:
         """Update hover state if the cursor moves in/out without an event.
