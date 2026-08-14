@@ -187,6 +187,13 @@ class PetWindow(QWidget):
         self._mouse_idle_since: float | None = None
         self._walk_idle_threshold: float = 5.0  # seconds before walking
         self._walk_stay_seconds: float = 3.0
+        # Walk cooldown: after returning home, ignore new walk triggers
+        # for this many seconds, even if the mouse is still parked. The
+        # pet needs to rest. Otherwise it oscillates between home and the
+        # mouse every ~8s (5 idle + 3 stay) when the user leaves the
+        # cursor near the home position.
+        self._walk_cooldown: float = 30.0
+        self._last_walk_ended_at: float = 0.0
         # Cache of body/legs layer splits keyed by walk-frame path. Built
         # once per frame (the cut is at a fixed ratio) and reused every
         # paint tick -- a crop is cheap but doing it 30 times a second
@@ -787,6 +794,11 @@ class PetWindow(QWidget):
             return
         if time.monotonic() - self._mouse_idle_since < self._walk_idle_threshold:
             return
+        # Walk cooldown: don't oscillate between home and a parked mouse.
+        # After returning home, ignore new walk triggers for
+        # _walk_cooldown seconds even if the cursor is still parked.
+        if time.monotonic() - self._last_walk_ended_at < self._walk_cooldown:
+            return
         # Only walk when there's nothing urgent to attend to.
         if self._overall not in (State.IDLE, State.EXITED, State.UNKNOWN):
             return
@@ -844,6 +856,9 @@ class PetWindow(QWidget):
         elif self._walk_phase == "returning":
             self._walk_phase = "idle"
             self._walk_anim = None
+            # Mark cooldown start so the pet gets to rest at home even
+            # if the cursor is still parked nearby.
+            self._last_walk_ended_at = time.monotonic()
         # If the walk was interrupted (style switch, etc.) the phase
         # would already be "idle" -- nothing to do.
 
