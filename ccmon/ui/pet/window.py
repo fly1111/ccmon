@@ -907,6 +907,14 @@ class PetWindow(QWidget):
             bubble.setWindowFlags(
                 Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
             )
+            # Click-through: hover bubbles sit on top of the pet
+            # window; if the bubble ate mouse events, the user
+            # couldn't drag the pet while a bubble was showing. The
+            # bubble is read-only (links live in the right-click menu
+            # not in the bubble), so making it transparent to mouse is
+            # safe.
+            bubble.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            bubble.setAttribute(Qt.WA_NoSystemBackground, True)
             # Layered look: dark rounded card with a coloured left edge that
             # echoes the global worst state. Solid background so it's readable
             # on any desktop colour.
