@@ -41,33 +41,33 @@ MOOD_WALKING = "walking"
 WALK_FRAMES_PREFIX = "walk_"
 WALK_FPS = 12  # 4 frames at 12 fps = 3 fps perceived, comfortable for a cat
 
-# Per-style "which way does the walk face as drawn on disk". mmx video
-# decides the cat's facing direction when it renders the walk, so styles
-# generated from different prompts may end up facing different ways.
-# PetWindow uses this to decide whether to flip the image at render time
-# (going right needs to face the direction of travel, returning left
-# needs to face the other way).
+# Default: all styles face LEFT. gen_pet_sprites.sh mirrors the walk
+# frames after generation so the saved image already faces the desired
+# "going" direction. window.py reads `walk_faces_going` to decide
+# whether to apply an extra flip at render time:
+#   - going phase: need facing-direction = LEFT (default). If saved
+#     image faces left, no flip; if right, mirror.
+#   - returning phase: facing-direction = RIGHT. Mirror relative to
+#     the going direction.
 #
-# True  = the saved walk_N_alpha.png is already facing RIGHT (the going
-#        direction). Don't flip on the way out; do flip on the way back.
-# False = the saved image faces LEFT. Flip on the way out (so it faces
-#        right and matches the travel direction); don't flip on the way
-#        back.
-WALK_FACES_RIGHT: dict[str, bool] = {
+# Per-style overrides are for styles that, for whatever reason, came
+# out facing the other way.
+WALK_FACES_GOING: dict[str, bool] = {
+    # luna's saved walk frames face LEFT (gen script mirrored them
+    # after generation, per the default policy).
     "luna": True,
-    # peter2's saved walk frames face LEFT (we deliberately mirrored
-    # them at generation time to give peter2 a distinct walk direction
-    # from luna). window.py reads this flag and applies a flip only
-    # when the going direction doesn't match the saved direction --
-    # so on the way out peter2 keeps its left-facing pose, on the
-    # way back it flips to face right.
+    # peter2's saved walk frames also face LEFT (gen script mirrored
+    # them). luna and peter2 share the same convention.
     "peter2": True,
 }
 
 
-def walk_faces_right(style: str) -> bool:
-    """True when the saved walk frames for `style` already face right."""
-    return WALK_FACES_RIGHT.get(style, True)
+def walk_faces_going(style: str) -> bool:
+    """True when the saved walk frames for `style` already face the
+    desired going direction (LEFT, by default). PetWindow uses this
+    to skip the extra flip on the way out.
+    """
+    return WALK_FACES_GOING.get(style, True)
 
 
 @dataclass

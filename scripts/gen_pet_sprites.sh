@@ -132,6 +132,19 @@ if [ "$_walk_enabled" = "1" ]; then
       --out "$out" >/dev/null
     strip_white "$out" "$STYLE_DIR/walk_${idx}_alpha.png"
   done
+  # Project policy: every walk cycle faces LEFT. mmx decides the cat's
+  # facing direction when it renders, so we flip after generation.
+  # This keeps sprite_loader's "saved image already faces going
+  # direction" default working for every style.
+  for ((i=0; i<WALK_FRAMES; i++)); do
+    idx=$((i+1))
+    ./.venv/Scripts/python.exe -c "
+from PIL import Image, ImageOps
+import sys
+img = Image.open(sys.argv[1])
+ImageOps.mirror(img).save(sys.argv[1])
+" "$STYLE_DIR/walk_${idx}_alpha.png" 2>/dev/null
+  done
 fi
 
 echo "Done. Style '$STYLE' at: $STYLE_DIR"

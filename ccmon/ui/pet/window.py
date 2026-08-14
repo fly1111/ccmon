@@ -335,14 +335,14 @@ class PetWindow(QWidget):
         chroma key) and cycled at WALK_FPS. Loaded images are cached on
         first use; we don't reload the same frame 30 times a second.
 
-        Each style's walk frames were generated with a particular
-        direction baked in (mmx's choice). PetWindow's `walk_faces_right`
-        tells us what the saved image already shows; we apply one extra
-        flip on the return trip so the cat faces the direction of travel
-        in both directions. The flip is cached per (asset, flipped) so
-        the mirror happens at most once per frame.
+        Default going direction is LEFT (set by the user). The saved
+        walk frame should already face left -- gen_pet_sprites.sh
+        mirrors all walk frames after generation. window.py applies
+        an extra flip on the return trip so the cat faces the opposite
+        direction while walking back. The flip is cached per (asset,
+        flipped) so the mirror happens at most once per frame.
         """
-        from .sprite_loader import list_walk_frames, walk_faces_right, WALK_FPS
+        from .sprite_loader import list_walk_frames, walk_faces_going, WALK_FPS
         frames = list_walk_frames(get_active_style())
         if not frames:
             # No walk cycle for this style -- render the mood art instead
@@ -356,10 +356,11 @@ class PetWindow(QWidget):
             )
         idx = int(time.monotonic() * WALK_FPS) % len(frames)
         asset = frames[idx]
-        # Need a flip when (saved direction != required direction).
-        # Required: going -> right, returning -> left.
-        need_right = self._walk_phase != "returning"
-        need_flip = (need_right != walk_faces_right(get_active_style()))
+        # Going phase wants facing-direction = left. Returning phase
+        # wants right (mirror the saved image). A flip is needed unless
+        # the saved image already faces the going direction.
+        returning = self._walk_phase == "returning"
+        need_flip = returning != walk_faces_going(get_active_style())
         cache_key = (asset, need_flip)
         image = self._walk_frame_cache.get(cache_key)
         if image is None:
