@@ -43,7 +43,11 @@ class Window:
     title: str
 
 
-def _visible_top_level_windows_for_pid(pid: int) -> list[Window]:
+def _visible_top_level_windows_for_pid(pid: int, *, cwd: str = "") -> list[Window]:
+    """All visible top-level windows owned by pid, with the cwd-matching
+    window moved to the front of the list. Callers that don't pass cwd
+    get the raw EnumWindows order (back-compat with old behaviour).
+    """
     out: list[Window] = []
     EnumWindows = user32.EnumWindows
     GetWindowThreadProcessId = user32.GetWindowThreadProcessId
@@ -51,7 +55,11 @@ def _visible_top_level_windows_for_pid(pid: int) -> list[Window]:
     GetWindowTextW = user32.GetWindowTextW
     GetWindowTextLengthW = user32.GetWindowTextLengthW
 
-    found = {"pid": 0}
+    needle = ""
+    if cwd:
+        needle = os.path.basename(cwd.replace("/", "\\").rstrip("\\")).casefold()
+    matched: list[Window] = []
+    rest: list[Window] = []
 
     def cb(hwnd, _lparam):
         owner_pid = wt.DWORD()
@@ -60,7 +68,6 @@ def _visible_top_level_windows_for_pid(pid: int) -> list[Window]:
             return True
         if not IsWindowVisible(hwnd):
             return True
-        # Exclude tool windows with no title or that are owned by another hwnd.
         length = GetWindowTextLengthW(hwnd)
         if length == 0:
             return True
@@ -69,12 +76,23 @@ def _visible_top_level_windows_for_pid(pid: int) -> list[Window]:
         title = buf.value
         if not title.strip():
             return True
-        out.append(Window(hwnd=hwnd, pid=pid, title=title))
-        found["pid"] += 1
+        w = Window(hwnd=hwnd, pid=pid, title=title)
+        if needle and needle in title.casefold():
+            matched.append(w)
+        else:
+            rest.append(w)
         return True
 
     EnumWindows(_WNDENUMPROC(cb), 0)
-    return out
+    return matched + rest
+
+
+def _resolve_window_for_pid(pid: int, cwd: str = "") -> Window | None:
+    """Pick the best top-level window for a pid (with cwd filter)."""
+    windows = _visible_top_level_windows_for_pid(pid, cwd=cwd)
+    if not windows:
+        return None
+    return windows[0]
 
 
 def _ancestors(pid: int, *, max_depth: int = 10) -> list[int]:
