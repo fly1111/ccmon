@@ -194,6 +194,13 @@ class PetWindow(QWidget):
         # audio yet (sound comes in Phase 5).
         self._petting: bool = False
         self._long_press_timer: QTimer | None = None
+        # Sleep mode: 5 minutes of cursor-idle (no movement, not even
+        # micro-jitter) drops the pet into sleep. Cursor activity wakes
+        # it. Detected in _check_hover which already runs every 100ms.
+        self._sleeping: bool = False
+        self._last_active_at: float = time.monotonic()
+        self._last_cursor_pos: QPoint | None = QCursor.pos()
+        self._sleep_idle_seconds: float = 300.0  # 5 min
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -339,6 +346,13 @@ class PetWindow(QWidget):
             painter.setPen(QColor("#FF6B9D"))
             painter.setFont(QFont("Segoe UI Emoji", 22))
             painter.drawText(PET_SIZE - 38, 30, "♥")
+        # Sleep indicator: dim the pet 30% and float a Zzz above it.
+        if self._sleeping:
+            painter.setOpacity(0.7)
+            painter.setPen(QColor("#90A4AE"))
+            painter.setFont(QFont("Segoe UI Emoji", 16))
+            painter.drawText(PET_SIZE - 36, 28, "Zzz")
+            painter.setOpacity(1.0)
         painter.end()
 
     def _render_walk_frame(self) -> Image.Image:
@@ -554,6 +568,10 @@ class PetWindow(QWidget):
         over to where the cursor is parked, and walks back home after
         a short stay. Only fires when the overall state is calm (idle /
         exited / unknown) -- busy moods take priority.
+
+        Sleep mode: 5 minutes of cursor-idle (no movement, not even
+        micro-jitter) drops the pet into sleep. Cursor movement wakes
+        it. The 100ms tick is enough resolution for both behaviours.
         """
         if self._menu_open or self._fading or not self.isVisible():
             return
@@ -570,6 +588,17 @@ class PetWindow(QWidget):
         # Walk-around tick. Tracks mouse movement and advances the
         # go/stay/return state machine.
         self._update_walk_state(cursor)
+        # Sleep mode tick. Uses a 4 px threshold to filter out sensor
+        # jitter (same as the walk-around state machine above).
+        if (cursor - self._last_cursor_pos).manhattanLength() > 4:
+            self._last_cursor_pos = cursor
+            self._last_active_at = time.monotonic()
+            if self._sleeping:
+                self._sleeping = False
+                self.update()
+        elif not self._sleeping and time.monotonic() - self._last_active_at > self._sleep_idle_seconds:
+            self._sleeping = True
+            self.update()
 
     def _update_walk_state(self, cursor: QPoint) -> None:
         if self._walk_phase in ("going", "returning"):
