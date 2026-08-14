@@ -449,6 +449,13 @@ class PetWindow(QWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             pos = event.position().toPoint()
+            # Cancel any in-flight walk: the click is a clear "stop". Don't
+            # also fire the jump-to-attention below; the user wants one
+            # action per click, not a teleport + a walk cancel.
+            if self._walk_phase in ("going", "returning"):
+                self._stop_walk()
+                event.accept()
+                return
             self._drag_offset = pos
             self._press_pos = pos
             # Schedule the single-click jump. The timer is the gate that lets
@@ -468,6 +475,18 @@ class PetWindow(QWidget):
             event.accept()
         elif event.button() == Qt.RightButton:
             self._show_menu(event.globalPosition().toPoint())
+
+    def _stop_walk(self) -> None:
+        """Cancel an in-flight walk and freeze the pet where it is.
+
+        Sets the cooldown so we don't immediately re-walk when the mouse
+        is still parked; the user just cancelled, so give them a beat.
+        """
+        if self._walk_anim is not None:
+            self._walk_anim.stop()
+            self._walk_anim = None
+        self._walk_phase = "idle"
+        self._last_walk_ended_at = time.monotonic()
 
     def mouseMoveEvent(self, event) -> None:
         if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
