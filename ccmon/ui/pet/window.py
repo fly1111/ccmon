@@ -203,6 +203,12 @@ class PetWindow(QWidget):
         # audio yet (sound comes in Phase 5).
         self._petting: bool = False
         self._long_press_timer: QTimer | None = None
+        # Chase-mouse mode: when ON, the pet continuously follows the
+        # cursor (any movement cancels the current walk and starts a new
+        # one). When OFF, the regular 5s-idle walk-around fires. Default
+        # OFF; toggled via right-click menu. Runtime only -- resets to
+        # OFF on pet restart.
+        self._chase_mode: bool = False
         # Sleep mode: 5 minutes of cursor-idle (no movement, not even
         # micro-jitter) drops the pet into sleep. Cursor activity wakes
         # it. Detected in _check_hover which already runs every 100ms.
@@ -368,6 +374,13 @@ class PetWindow(QWidget):
                 painter.setPen(QColor("#FF6B9D"))
                 painter.setFont(QFont("Segoe UI Emoji", 22))
                 painter.drawText(PET_SIZE - 38, 30, "♥")
+            # Chase-mode indicator: small blue dot top-left so the user
+            # knows the pet is in continuous-cursor-follow mode.
+            if self._chase_mode:
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setBrush(QColor(80, 160, 255, 220))
+                painter.setPen(QColor(220, 240, 255, 255))
+                painter.drawEllipse(8, 8, 14, 14)
             # Sleep indicator: dim the pet 30% and float a Zzz above it.
             if self._sleeping:
                 painter.setOpacity(0.7)
@@ -533,6 +546,14 @@ class PetWindow(QWidget):
         self._petting = False
         self.update()
 
+    def _on_chase_toggled(self, on: bool) -> None:
+        self._chase_mode = on
+        # If we just turned chase OFF, cancel any in-flight walk and
+        # let the regular 5s-idle behaviour take over next time.
+        if not on and self._walk_phase in ("going", "returning"):
+            self._stop_walk()
+        self.update()
+
     def keyPressEvent(self, event) -> None:
         """Keyboard shortcuts while the bubble is up.
 
@@ -683,10 +704,15 @@ class PetWindow(QWidget):
 
     def _update_walk_state(self, cursor: QPoint) -> None:
         if self._walk_phase in ("going", "returning"):
-            # Don't update mouse-idle while in motion -- the walk itself
-            # generates position changes that would otherwise count as
-            # "user moved the mouse". An in-flight walk runs to
-            # completion regardless of cursor activity.
+            # Chase mode: while a walk is in flight, any new cursor
+            # movement re-targets. Cancel the in-flight animation and
+            # start a new one toward the latest position.
+            if self._chase_mode and self._last_mouse_pos is not None and (
+                cursor - self._last_mouse_pos
+            ).manhattanLength() > 4:
+                self._last_mouse_pos = cursor
+                self._start_walk_to_mouse()
+            # Otherwise: not in chase mode, let the in-flight walk run.
             return
         # Track cursor idle. A 4 px threshold filters out hand-jitter so
         # the counter doesn't reset on every sub-pixel sensor blip.
@@ -695,6 +721,10 @@ class PetWindow(QWidget):
         ).manhattanLength() > 4:
             self._last_mouse_pos = cursor
             self._mouse_idle_since = time.monotonic()
+            # Chase mode: any cursor movement fires a walk immediately.
+            if self._chase_mode and self._walk_phase == "idle":
+                if self._overall in (State.IDLE, State.EXITED, State.UNKNOWN):
+                    self._start_walk_to_mouse()
         if self._walk_phase == "staying":
             if time.monotonic() >= self._stay_until:
                 self._start_walk_back()
@@ -725,11 +755,24 @@ class PetWindow(QWidget):
         """
         if self._last_mouse_pos is None:
             return
-        self._walk_origin = self.pos()
+        # In chase mode, treat the current position as the new "home"
+        # so the return trip is short and we can re-target on the next
+        # cursor move immediately. Otherwise the home is the original
+        # position from when the walk started.
+        if self._chase_mode:
+            self._walk_origin = self.pos()
         target = QPoint(
             self._last_mouse_pos.x() - PET_SIZE // 2,
             self._last_mouse_pos.y() - PET_SIZE // 2,
         )
+        # Skip the "staying" pause in chase mode -- we're heading
+        # somewhere new as soon as the cursor moves again.
+        if self._chase_mode:
+            self._walk_phase = "going"
+            # In chase mode, _on_walk_finished just resets to idle (no
+            # stay, no return) so the next cursor move can fire.
+            self._start_walk_anim(self._walk_origin, target, going=True, return_immediately=True)
+            return
         self._walk_target = target
         self._walk_phase = "going"
         self._start_walk_anim(self._walk_origin, target, going=True)
@@ -740,7 +783,9 @@ class PetWindow(QWidget):
         current = self.pos()
         self._start_walk_anim(current, self._walk_origin, going=False)
 
-    def _start_walk_anim(self, start: QPoint, end: QPoint, *, going: bool) -> None:
+    def _start_walk_anim(
+        self, start: QPoint, end: QPoint, *, going: bool, return_immediately: bool = False
+    ) -> None:
         if self._walk_anim is not None:
             self._walk_anim.stop()
         distance = (end - start).manhattanLength()
@@ -752,9 +797,21 @@ class PetWindow(QWidget):
         anim.setDuration(duration_ms)
         anim.setStartValue(start)
         anim.setEndValue(end)
-        anim.finished.connect(self._on_walk_finished)
+        if return_immediately:
+            # Chase mode: end the walk straight into idle so the next
+            # cursor move can re-target without a stay/return cycle.
+            anim.finished.connect(lambda: self._on_chase_segment_done())
+        else:
+            anim.finished.connect(self._on_walk_finished)
         self._walk_anim = anim
         anim.start()
+
+    def _on_chase_segment_done(self) -> None:
+        """End-of-segment handler for chase mode (no stay, no return)."""
+        self._walk_phase = "idle"
+        self._walk_anim = None
+        # Don't update _last_walk_ended_at -- chase mode is continuous,
+        # the cooldown only applies to the regular walk-around behaviour.
 
     def _on_walk_finished(self) -> None:
         if self._walk_phase == "going":
@@ -1020,6 +1077,16 @@ class PetWindow(QWidget):
                 menu.addAction(mute)
 
         menu.addSeparator()
+
+        # Chase-mouse toggle. When ON the pet continuously follows the
+        # cursor (re-targets on every mouse move, no stay, no return).
+        # When OFF the regular 5s-idle walk-around behaviour resumes.
+        chase = QAction("追鼠标模式", self)
+        chase.setCheckable(True)
+        chase.setChecked(self._chase_mode)
+        chase.toggled.connect(self._on_chase_toggled)
+        menu.addAction(chase)
+
         hide = QAction(menu.style().standardIcon(QStyle.SP_DialogCloseButton), "隐藏宠物", self)
         hide.triggered.connect(self.toggle_self.emit)
         menu.addAction(hide)
