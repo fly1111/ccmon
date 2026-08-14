@@ -48,7 +48,9 @@ def _copy_id(sid: str) -> None:
         data = sid.encode("utf-16-le") + b"\x00\x00"
         handle = ctypes.windll.kernel32.GlobalAlloc(0x0002, len(data))
         ctypes.windll.kernel32.GlobalLock(handle)
-        ctypes.windll.memmove(handle, data, len(data))
+        # memmove lives in msvcrt, not in the Win32 DLLs; ctypes.windll
+        # looks under the standard Win32 namespace and fails to find it.
+        ctypes.cdll.msvcrt.memmove(handle, data, len(data))
         ctypes.windll.user32.SetClipboardData(13, handle)
     finally:
         ctypes.windll.user32.CloseClipboard()
