@@ -177,6 +177,11 @@ class PetWindow(QWidget):
         # to; _walk_target is the cursor-following destination. _walk_anim
         # is the QPropertyAnimation driving the position. Mouse idle is
         # tracked by _last_mouse_pos and _mouse_idle_since.
+        # _walk_facing_left: True when the cat should face the LEFT
+        # direction (the walk frame needs to be mirrored). Set based on
+        # the direction of travel -- in regular walk-around it's True on
+        # the return trip; in chase mode it's based on target vs current
+        # position. _render_walk_frame reads this to decide the flip.
         self._walk_phase: str = "idle"
         self._walk_origin: QPoint = QPoint()
         self._walk_target: QPoint = QPoint()
@@ -186,6 +191,7 @@ class PetWindow(QWidget):
         self._mouse_idle_since: float | None = None
         self._walk_idle_threshold: float = 5.0  # seconds before walking
         self._walk_stay_seconds: float = 3.0
+        self._walk_facing_left: bool = False
         # Walk cooldown: after returning home, ignore new walk triggers
         # for this many seconds, even if the mouse is still parked. The
         # pet needs to rest. Otherwise it oscillates between home and the
@@ -437,7 +443,10 @@ class PetWindow(QWidget):
         fps = max(2, min(12, len(frames)))
         idx = int(time.monotonic() * fps) % len(frames)
         asset = frames[idx]
-        flipped = self._walk_phase == "returning"
+        # Chase mode has no return phase so we can't use phase=='returning'
+        # to detect "going left". Use the dedicated flag, set when the
+        # walk started based on target vs origin x.
+        flipped = self._walk_facing_left
         cache_key = (asset, flipped)
         image = self._walk_frame_cache.get(cache_key)
         if image is None:
@@ -765,6 +774,9 @@ class PetWindow(QWidget):
             self._last_mouse_pos.x() - PET_SIZE // 2,
             self._last_mouse_pos.y() - PET_SIZE // 2,
         )
+        # Decide facing direction. Cat should face the direction of
+        # travel: target.x < origin.x means leftward, set facing_left.
+        self._walk_facing_left = target.x() < self._walk_origin.x()
         # Skip the "staying" pause in chase mode -- we're heading
         # somewhere new as soon as the cursor moves again.
         if self._chase_mode:
