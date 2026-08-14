@@ -437,17 +437,18 @@ class PetWindow(QWidget):
                 size=PET_SIZE,
                 spot_jitter=self._spot_jitter,
             )
-        # Dynamic fps = number of frames (capped). This makes every
-        # style's walk loop take ~1 second end-to-end regardless of how
-        # many key frames it has.
-        fps = max(2, min(12, len(frames)))
-        idx = int(time.monotonic() * fps) % len(frames)
-        asset = frames[idx]
-        # Chase mode has no return phase so we can't use phase=='returning'
-        # to detect "going left". Use the dedicated flag, set when the
-        # walk started based on target vs origin x.
-        flipped = self._walk_facing_left
-        cache_key = (asset, flipped)
+        # Walk frames come in 2 directions (L first, R second) in sorted
+        # order. Pick the half matching the current travel direction so
+        # no runtime mirror is needed.
+        half = max(1, len(frames) // 2)
+        chosen = frames[:half] if self._walk_facing_left else frames[half:]
+        fps = max(2, min(12, len(chosen)))
+        idx = int(time.monotonic() * fps) % len(chosen)
+        asset = chosen[idx]
+        # Frames are pre-rendered for the correct direction; no runtime
+        # mirror needed.
+        flipped = False
+        cache_key = (asset,)
         image = self._walk_frame_cache.get(cache_key)
         if image is None:
             image = Image.open(asset).convert("RGBA")
@@ -557,10 +558,18 @@ class PetWindow(QWidget):
 
     def _on_chase_toggled(self, on: bool) -> None:
         self._chase_mode = on
-        # If we just turned chase OFF, cancel any in-flight walk and
-        # let the regular 5s-idle behaviour take over next time.
+        # Turning chase OFF: cancel any in-flight walk, let the regular
+        # 5s-idle behaviour take over next time.
         if not on and self._walk_phase in ("going", "returning"):
             self._stop_walk()
+        # Turning chase ON: fire a walk immediately so the user doesn't
+        # have to wait 5s and/or move the mouse. Seed _last_mouse_pos
+        # to the current cursor; the walk-around state machine
+        # consumes it on the next _check_hover tick.
+        if on and self._walk_phase == "idle":
+            if self._overall in (State.IDLE, State.EXITED, State.UNKNOWN):
+                self._last_mouse_pos = QCursor.pos()
+                self._start_walk_to_mouse()
         self.update()
 
     def keyPressEvent(self, event) -> None:
@@ -742,6 +751,14 @@ class PetWindow(QWidget):
         if self._mouse_idle_since is None:
             return
         if time.monotonic() - self._mouse_idle_since < self._walk_idle_threshold:
+            # Chase mode: when the user enables chase but sits still,
+            # fire the walk as soon as the 5s idle threshold is
+            # reached (so the pet walks out within a few seconds
+            # instead of waiting for the next cursor move).
+            if self._chase_mode and self._walk_phase == "idle":
+                if self._overall in (State.IDLE, State.EXITED, State.UNKNOWN):
+                    self._start_walk_to_mouse()
+                    return
             return
         # Walk cooldown: don't oscillate between home and a parked mouse.
         # After returning home, ignore new walk triggers for
