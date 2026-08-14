@@ -44,6 +44,7 @@ from PySide6.QtGui import (
     QAction,
     QColor,
     QCursor,
+    QFont,
     QGuiApplication,
     QImage,
     QPainter,
