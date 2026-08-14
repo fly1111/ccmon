@@ -327,53 +327,58 @@ class PetWindow(QWidget):
             )
 
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-
-        if use_transform:
-            if self._walk_phase in ("going", "returning"):
-                # Walk frames already carry motion; do NOT rotate or
-                # translate them -- the mmx video was rendered assuming
-                # a fixed camera, and any extra transform distorts the
-                # legs / head in a way that breaks the cycle.
-                pass
-            else:
-                mood = _state_to_mood(self._overall)
-                m = MOOD_MOTION[mood]
-                head_bob = m.head_amp * math.sin(t * m.head_freq) + m.head_offset
-                # Yawn only when sleepy -- a busy session has no business
-                # looking drowsy. The helper self-ticks its own schedule.
-                yawn = self.yawn_offset() if mood == MOOD_SLEEPY else 0.0
-                painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob + yawn)
-                painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
-
-        pixmap = QPixmap.fromImage(
-            QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888)
-        )
-        painter.drawPixmap(0, 0, pixmap)
-
-        # Petting indicator: a heart floats above the pet while the user
-        # holds the left mouse button. Drawn AFTER the pixmap so it sits
-        # on top.
-        if self._petting:
-            painter.setPen(QColor("#FF6B9D"))
-            painter.setFont(QFont("Segoe UI Emoji", 22))
-            painter.drawText(PET_SIZE - 38, 30, "♥")
-        # Sleep indicator: dim the pet 30% and float a Zzz above it.
-        if self._sleeping:
-            painter.setOpacity(0.7)
-            painter.setPen(QColor("#90A4AE"))
-            painter.setFont(QFont("Segoe UI Emoji", 16))
-            painter.drawText(PET_SIZE - 36, 28, "Zzz")
-            painter.setOpacity(1.0)
-        # Laser pointer: a small red dot at the cursor's on-canvas
-        # position. Drawn last so it sits on top of the pet.
-        if self._laser_mode and self._laser_pos_global is not None:
-            local = self.mapFromGlobal(self._laser_pos_global)
+        try:
             painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setBrush(QColor(255, 50, 50, 220))
-            painter.setPen(QColor(255, 200, 200, 255))
-            painter.drawEllipse(local.x() - 6, local.y() - 6, 12, 12)
-        painter.end()
+
+            if use_transform:
+                if self._walk_phase in ("going", "returning"):
+                    # Walk frames already carry motion; do NOT rotate or
+                    # translate them -- the mmx video was rendered assuming
+                    # a fixed camera, and any extra transform distorts the
+                    # legs / head in a way that breaks the cycle.
+                    pass
+                else:
+                    mood = _state_to_mood(self._overall)
+                    m = MOOD_MOTION[mood]
+                    head_bob = m.head_amp * math.sin(t * m.head_freq) + m.head_offset
+                    # Yawn only when sleepy -- a busy session has no business
+                    # looking drowsy. The helper self-ticks its own schedule.
+                    yawn = self.yawn_offset() if mood == MOOD_SLEEPY else 0.0
+                    painter.translate(PET_SIZE / 2, PET_SIZE / 2 + head_bob + yawn)
+                    painter.translate(-PET_SIZE / 2, -PET_SIZE / 2)
+
+            pixmap = QPixmap.fromImage(
+                QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888)
+            )
+            painter.drawPixmap(0, 0, pixmap)
+
+            # Petting indicator: a heart floats above the pet while the user
+            # holds the left mouse button. Drawn AFTER the pixmap so it sits
+            # on top.
+            if self._petting:
+                painter.setPen(QColor("#FF6B9D"))
+                painter.setFont(QFont("Segoe UI Emoji", 22))
+                painter.drawText(PET_SIZE - 38, 30, "♥")
+            # Sleep indicator: dim the pet 30% and float a Zzz above it.
+            if self._sleeping:
+                painter.setOpacity(0.7)
+                painter.setPen(QColor("#90A4AE"))
+                painter.setFont(QFont("Segoe UI Emoji", 16))
+                painter.drawText(PET_SIZE - 36, 28, "Zzz")
+                painter.setOpacity(1.0)
+            # Laser pointer: a small red dot at the cursor's on-canvas
+            # position. Drawn last so it sits on top of the pet.
+            if self._laser_mode and self._laser_pos_global is not None:
+                local = self.mapFromGlobal(self._laser_pos_global)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setBrush(QColor(255, 50, 50, 220))
+                painter.setPen(QColor(255, 200, 200, 255))
+                painter.drawEllipse(local.x() - 6, local.y() - 6, 12, 12)
+        finally:
+            # Always release the painter, even if an exception fires
+            # mid-paint. Without this, QBackingStore::endPaint() logs
+            # 'called with active painter' on the next repaint.
+            painter.end()
 
     def _render_walk_frame(self) -> Image.Image:
         """Pick the current walk-cycle frame for the active style.
