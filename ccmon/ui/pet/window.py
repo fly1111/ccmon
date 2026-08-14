@@ -183,6 +183,9 @@ class PetWindow(QWidget):
         # the return trip; in chase mode it's based on target vs current
         # position. _render_walk_frame reads this to decide the flip.
         self._walk_phase: str = "idle"
+        # Home is set to the actual current position in _position_on_screen
+        # (called at the end of __init__), so the first walk-around
+        # starts from the visible default position, not QPoint() = (0,0).
         self._walk_origin: QPoint = QPoint()
         self._walk_target: QPoint = QPoint()
         self._walk_anim: QPropertyAnimation | None = None
@@ -199,6 +202,13 @@ class PetWindow(QWidget):
         # cursor near the home position.
         self._walk_cooldown: float = 30.0
         self._last_walk_ended_at: float = 0.0
+        # After the user clicks the pet to cancel a walk, the regular
+        # walk-around trigger is suppressed until the user moves the
+        # mouse. Without this, 5s after the cancel the pet would
+        # automatically start walking again (because the mouse is still
+        # parked) -- looks like the cancel didn't take. Set on cancel,
+        # cleared on the next cursor movement.
+        self._walk_cancelled: bool = False
         # Cache of body/legs layer splits keyed by walk-frame path. Built
         # once per frame (the cut is at a fixed ratio) and reused every
         # paint tick -- a crop is cheap but doing it 30 times a second
@@ -504,12 +514,21 @@ class PetWindow(QWidget):
 
         Sets the cooldown so we don't immediately re-walk when the mouse
         is still parked; the user just cancelled, so give them a beat.
+        Also sets _walk_cancelled so the 5s-idle walk-around doesn't
+        silently re-fire -- the user has to move the mouse to re-engage.
+        Finally, re-anchors _walk_origin to the pet's current position
+        so the next walk-around starts from here (not the original
+        home) -- otherwise the next walk would QPropertyAnimation-tween
+        from the old home to the mouse, briefly snapping the window
+        back to the home before walking out.
         """
         if self._walk_anim is not None:
             self._walk_anim.stop()
             self._walk_anim = None
         self._walk_phase = "idle"
+        self._walk_origin = self.pos()
         self._last_walk_ended_at = time.monotonic()
+        self._walk_cancelled = True
 
     def mouseMoveEvent(self, event) -> None:
         if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
@@ -737,6 +756,9 @@ class PetWindow(QWidget):
         if self._last_mouse_pos is None or (
             cursor - self._last_mouse_pos
         ).manhattanLength() > 4:
+            # Cursor moved: clear any cancel lock so the pet is free
+            # to walk again.
+            self._walk_cancelled = False
             self._last_mouse_pos = cursor
             self._mouse_idle_since = time.monotonic()
             # Chase mode: any cursor movement fires a walk immediately.
