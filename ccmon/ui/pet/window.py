@@ -183,10 +183,7 @@ class PetWindow(QWidget):
         # the return trip; in chase mode it's based on target vs current
         # position. _render_walk_frame reads this to decide the flip.
         self._walk_phase: str = "idle"
-        # Home is set to the actual current position in _position_on_screen
-        # (called at the end of __init__), so the first walk-around
-        # starts from the visible default position, not QPoint() = (0,0).
-        self._walk_origin: QPoint = QPoint()
+        self._walk_origin: QPoint = QPoint()  # overwritten after _position_on_screen
         self._walk_target: QPoint = QPoint()
         self._walk_anim: QPropertyAnimation | None = None
         self._stay_until: float = 0.0
@@ -285,11 +282,17 @@ class PetWindow(QWidget):
         screen = QGuiApplication.primaryScreen()
         if screen is None:
             self.move(100, 100)
-            return
-        geo = screen.availableGeometry()
-        x = geo.right() - PET_SIZE - 24
-        y = geo.bottom() - PET_SIZE - 24
-        self.move(x, y)
+        else:
+            geo = screen.availableGeometry()
+            x = geo.right() - PET_SIZE - 24
+            y = geo.bottom() - PET_SIZE - 24
+            self.move(x, y)
+        # Capture the actual visible position as the walk home. Without
+        # this, _walk_origin stays at QPoint() (0,0) until the first
+        # walk-around fires, and QPropertyAnimation tweens from (0,0)
+        # -- briefly snapping the pet to the top-left corner before
+        # walking out to the mouse.
+        self._walk_origin = self.pos()
 
     # ---- public API ----------------------------------------------------
 
