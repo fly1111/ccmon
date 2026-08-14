@@ -185,6 +185,22 @@ engine.start()  # ← 不能漏
 return run_pet(engine)
 ```
 
+## 宠物互动 (Phase 1 + Phase 2)
+
+| 互动 | 触发 | 内部逻辑 | 文件位置 |
+|---|---|---|---|
+| 摸头 (heart) | mousePress 500ms+ | `_long_press_timer` + `_start_petting` | `window.py` `mousePressEvent` |
+| 睡眠 (Zzz) | 鼠标停 ≥5min | `_check_hover` 检测 `_last_active_at` 差值 | `window.py` `_check_hover` |
+| 激光笔 (红点) | 鼠标速度 > 800 px/s | `_check_hover` 算 dt 距离/时间 | `window.py` `_check_hover` |
+| 自动避让 | 前景窗口覆盖 >50% | Win32 GetForegroundWindow + 1s 轮询 | `window.py` `_check_avoid` |
+| 跟 active window | foreground hwnd 变化 | 30% 漂移到新窗口中心 | `window.py` `_drift_toward` |
+| Walk-around | 鼠标停 5s | 已有；走 + 停 3s + 走回 | `window.py` `_update_walk_state` |
+| 数字键跳 | 1-9 键 | 跳到 priority 第 N 个 session | `window.py` `keyPressEvent` |
+| 单击跳 | mouseRelease（无 drag） | `_jump_to_attention` | `window.py` `mouseReleaseEvent` |
+| 双击菜单 | mouseDoubleClick | 取消单击 + 打开菜单 | `window.py` `mouseDoubleClickEvent` |
+
+所有 painter 绘制在 `paintEvent` 内 `try/finally` 包好，确保 `painter.end()` 一定调用（修了之前的"called with active painter"警告）。新增 Qt 类（QColor、QFont、QEasingCurve）必须加到 PySide6.QtGui / QtCore import。
+
 ## 常用命令
 
 ```bash

@@ -123,6 +123,24 @@ python -m scripts.uninstall   # 移除
 
 宠物没有图也能跑 —— `ccmon/ui/pet/fallback_sprite.py` 用 Pillow 直接画一个显示器小人。若你想用 AI 生成专属形象，把 PNG 放到 `%LOCALAPPDATA%\ccmon\assets\pet\<state>.png`（如 `needs_approval.png`、`running.png`），宠物会自动优先用它们。
 
+### 互动
+
+| 操作 | 触发 | 效果 |
+|---|---|---|
+| 鼠标停 5 秒 | idle mouse | 猫走过去看，回到原位停 3 秒 |
+| **单击** | left click | 跳到最紧急的 session 窗口 |
+| **双击** | double click | 打开菜单（切换形象、隐藏） |
+| **长按 500ms+** | left press & hold | 摸头 → ❤️ 浮在猫头上，松开消失 |
+| **鼠标快速移动** | cursor > 800 px/s | 激光笔模式 → 画红点跟随，停下 1s 消失 |
+| **5 分钟不动** | no cursor movement | 猫睡觉 → 70% 透明 + Zzz |
+| **窗口挡住猫** | foreground covers >50% | 猫跳到屏幕对角（300ms ease-out-cubic） |
+| **切换 active window** | Alt+Tab / 点其他 app | 猫朝新窗口漂 30%（subtle） |
+
+键盘快捷键（气泡显示时）：
+
+- `Esc` — 关气泡
+- `1` `2` `3`... `9` — 跳到第 N 个 session（按 priority 排序）
+
 ## 配置 webhooks
 
 桌面提醒 + 提示音是免费的。手机推送通过一个通用 webhook 配置 —— Bark / Server酱 / Telegram / Discord / 企微机器人 都用同一份 schema。在 `ccmon/notify/webhook.py` 写一个 `WebhookConfig`，触发时机是 `NEEDS_APPROVAL`、`ERROR`、`NEEDS_INPUT` 之一或多个。
