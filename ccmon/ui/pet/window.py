@@ -50,7 +50,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QStyle, QWidget
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from ...models import Session, State
 from .sprite_loader import BUILTIN_STYLE, get_active_style, render_frame
@@ -334,8 +334,12 @@ class PetWindow(QWidget):
         Walk frames are pre-rendered PNGs (mmx video -> ffmpeg -> per-frame
         chroma key) and cycled at WALK_FPS. Loaded images are cached on
         first use; we don't reload the same frame 30 times a second.
+
+        On the return trip the cat should face the opposite direction so
+        it doesn't appear to walk backwards. We cache the mirrored variant
+        separately so the flip happens at most once per frame.
         """
-        from .sprite_loader import list_walk_frames
+        from .sprite_loader import list_walk_frames, WALK_FPS
         frames = list_walk_frames(get_active_style())
         if not frames:
             # No walk cycle for this style -- render the mood art instead
@@ -347,15 +351,18 @@ class PetWindow(QWidget):
                 size=PET_SIZE,
                 spot_jitter=self._spot_jitter,
             )
-        from .sprite_loader import WALK_FPS
         idx = int(time.monotonic() * WALK_FPS) % len(frames)
         asset = frames[idx]
-        image = self._walk_frame_cache.get(asset)
+        flipped = self._walk_phase == "returning"
+        cache_key = (asset, flipped)
+        image = self._walk_frame_cache.get(cache_key)
         if image is None:
             image = Image.open(asset).convert("RGBA")
             if image.size != (PET_SIZE, PET_SIZE):
                 image = image.resize((PET_SIZE, PET_SIZE), Image.LANCZOS)
-            self._walk_frame_cache[asset] = image
+            if flipped:
+                image = ImageOps.mirror(image)
+            self._walk_frame_cache[cache_key] = image
         return image
 
     # ---- interaction ---------------------------------------------------
