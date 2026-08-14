@@ -205,6 +205,11 @@ class PetWindow(QWidget):
         self._avoid_anim: QPropertyAnimation | None = None
         self._last_avoid_at: float = 0.0
         self._avoid_cooldown: float = 2.0  # seconds between auto-jumps
+        # Follow active window: when the foreground hwnd changes, drift
+        # 30% of the way toward the new window's centre. Subtler than
+        # the full avoid jump.
+        self._follow_anim: QPropertyAnimation | None = None
+        self._last_follow_hwnd: int = 0
         # Sleep mode: 5 minutes of cursor-idle (no movement, not even
         # micro-jitter) drops the pet into sleep. Cursor activity wakes
         # it. Detected in _check_hover which already runs every 100ms.
@@ -608,6 +613,10 @@ class PetWindow(QWidget):
 
         Uses Win32 GetForegroundWindow + GetWindowRect. We exclude our
         own window so clicking the pet doesn't make it dodge itself.
+
+        Also handles "follow active window" subtly: when the foreground
+        window changes (Alt+Tab or clicking another app), the pet
+        drifts 30% of the way toward the new window's centre.
         """
         if not self.isVisible():
             return
@@ -621,15 +630,55 @@ class PetWindow(QWidget):
         fg = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
         pet = QRect(self.pos(), self.size())
         inter = fg.intersected(pet)
-        if inter.isEmpty():
-            return
-        if inter.width() * inter.height() < pet.width() * pet.height() * 0.5:
-            return
-        now = time.monotonic()
-        if now - self._last_avoid_at < self._avoid_cooldown:
-            return
-        self._last_avoid_at = now
-        self._jump_to_edge_away_from(fg.center())
+        # Only fire the heavy "jump to edge" path when the pet is
+        # genuinely obscured. Subtle follow uses the same poll.
+        covered = (
+            not inter.isEmpty()
+            and inter.width() * inter.height()
+            >= pet.width() * pet.height() * 0.5
+        )
+        if covered:
+            now = time.monotonic()
+            if now - self._last_avoid_at >= self._avoid_cooldown:
+                self._last_avoid_at = now
+                self._jump_to_edge_away_from(fg.center())
+        # Follow active window: if the foreground hwnd changed since the
+        # last poll, drift toward it. The _follow_anim field stores the
+        # in-flight animation; we re-target by stopping and restarting.
+        if hwnd != self._last_follow_hwnd:
+            self._last_follow_hwnd = hwnd
+            self._drift_toward(fg.center(), strength=0.30)
+            return  # prefer follow over avoid when both could apply
+        # If we're here, the foreground didn't change; nothing to do.
+
+    def _drift_toward(self, target_global: QPoint, strength: float = 0.3) -> None:
+        """Move part-way toward a point in screen coordinates.
+
+        `strength` is the fraction of the distance we close -- 0.3 means
+        "drift 30% of the way there". This is the "subtle" part: the
+        pet doesn't yank itself to the new window, just leans that way.
+        """
+        cur = self.pos()
+        # Pet's top-left target so its center ends up between cur and target.
+        pet_center = cur + QPoint(self.width() // 2, self.height() // 2)
+        delta = target_global - pet_center
+        new_center = pet_center + QPoint(int(delta.x() * strength), int(delta.y() * strength))
+        new_pos = new_center - QPoint(self.width() // 2, self.height() // 2)
+        # Clamp to screen
+        screen = QGuiApplication.screenAt(cur) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            new_pos.setX(max(geo.left() + 8, min(geo.right() - self.width() - 8, new_pos.x())))
+            new_pos.setY(max(geo.top() + 8, min(geo.bottom() - self.height() - 8, new_pos.y())))
+        if self._follow_anim is not None:
+            self._follow_anim.stop()
+        anim = QPropertyAnimation(self, b"pos")
+        anim.setDuration(400)
+        anim.setStartValue(cur)
+        anim.setEndValue(new_pos)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._follow_anim = anim
+        anim.start()
 
     def _jump_to_edge_away_from(self, blocker_center: QPoint) -> None:
         """Animate the pet to the screen edge farthest from a point."""
