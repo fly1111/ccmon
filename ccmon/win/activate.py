@@ -131,27 +131,6 @@ def _ancestors(pid: int, *, max_depth: int = 10) -> list[int]:
     return chain
 
 
-def _resolve_window_for_pid(pid: int, cwd: str = "") -> Window | None:
-    """Pick the best top-level window for a pid.
-
-    When a process has multiple visible windows (Windows Terminal tabs,
-    multi-window VS Code, a few stray dialogs), `windows[0]` is whichever
-    EnumWindows happened to surface first -- often the wrong tab/window.
-    Prefer a window whose title contains the cwd's basename; only fall
-    back to the first window when no title matches.
-    """
-    windows = _visible_top_level_windows_for_pid(pid)
-    if not windows:
-        return None
-    if cwd:
-        needle = os.path.basename(cwd.replace("/", "\\").rstrip("\\")).casefold()
-        if needle:
-            for w in windows:
-                if needle in w.title.casefold():
-                    return w
-    return windows[0]
-
-
 def focus_window(hwnd: int) -> bool:
     """Bring a hwnd to the foreground. Returns True iff our hwnd is now foreground."""
     if not user32.IsWindow(hwnd):
