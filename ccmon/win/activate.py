@@ -168,9 +168,9 @@ def jump_to_session(pid: int, cwd: str) -> bool:
         # VS Code / Cursor: pick the window whose title contains the
         # matching workspace folder basename (so multi-window VS Code
         # doesn't jump to the wrong project).
-        windows = _visible_top_level_windows_for_pid(binding.pid, cwd=cwd)
-        if windows:
-            return focus_window(windows.hwnd)
+        window = _resolve_window_for_pid(binding.pid, cwd=cwd)
+        if window:
+            return focus_window(window.hwnd)
 
     # 2. Process-tree walk
     for ancestor in _ancestors(pid):
