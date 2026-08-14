@@ -44,21 +44,28 @@ class Window:
 
 
 def _visible_top_level_windows_for_pid(pid: int, *, cwd: str = "") -> list[Window]:
-    """All visible top-level windows owned by pid, with the cwd-matching
-    window moved to the front of the list. Callers that don't pass cwd
-    get the raw EnumWindows order (back-compat with old behaviour).
+    """All visible top-level windows owned by pid, ordered by best-match
+    first. Callers that don't pass cwd get the raw EnumWindows order.
+
+    Match priority (first hit wins):
+      1. title contains the cwd's basename (e.g. WT tab that set
+         its title to the project path, or VS Code window title
+         which shows the workspace folder)
+      2. title contains "claude" (catches WT tabs that didn't
+         update the title to the cwd, but are running Claude Code)
+      3. first window as captured by EnumWindows
     """
-    out: list[Window] = []
     EnumWindows = user32.EnumWindows
     GetWindowThreadProcessId = user32.GetWindowThreadProcessId
     IsWindowVisible = user32.IsWindowVisible
     GetWindowTextW = user32.GetWindowTextW
     GetWindowTextLengthW = user32.GetWindowTextLengthW
 
-    needle = ""
+    cwd_needle = ""
     if cwd:
-        needle = os.path.basename(cwd.replace("/", "\\").rstrip("\\")).casefold()
-    matched: list[Window] = []
+        cwd_needle = os.path.basename(cwd.replace("/", "\\").rstrip("\\")).casefold()
+    cwd_hits: list[Window] = []
+    claude_hits: list[Window] = []
     rest: list[Window] = []
 
     def cb(hwnd, _lparam):
@@ -77,14 +84,17 @@ def _visible_top_level_windows_for_pid(pid: int, *, cwd: str = "") -> list[Windo
         if not title.strip():
             return True
         w = Window(hwnd=hwnd, pid=pid, title=title)
-        if needle and needle in title.casefold():
-            matched.append(w)
+        title_lc = title.casefold()
+        if cwd_needle and cwd_needle in title_lc:
+            cwd_hits.append(w)
+        elif "claude" in title_lc:
+            claude_hits.append(w)
         else:
             rest.append(w)
         return True
 
     EnumWindows(_WNDENUMPROC(cb), 0)
-    return matched + rest
+    return cwd_hits + claude_hits + rest
 
 
 def _resolve_window_for_pid(pid: int, cwd: str = "") -> Window | None:
