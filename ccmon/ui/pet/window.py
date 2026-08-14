@@ -216,7 +216,16 @@ class PetWindow(QWidget):
         # 30% of the way toward the new window's centre. Subtler than
         # the full avoid jump.
         self._follow_anim: QPropertyAnimation | None = None
-        self._last_follow_hwnd: int = 0
+        # Seed with the current foreground window so the FIRST poll
+        # doesn't fire a spurious drift (was previously 0, which never
+        # matches a real hwnd). winId may not be valid yet, so defer
+        # to the first _check_avoid tick if Win32 isn't ready.
+        try:
+            import ctypes
+            _hwnd = ctypes.windll.user32.GetForegroundWindow()
+            self._last_follow_hwnd: int = int(_hwnd) if _hwnd else 0
+        except Exception:  # noqa: BLE001
+            self._last_follow_hwnd: int = 0
         # Sleep mode: 5 minutes of cursor-idle (no movement, not even
         # micro-jitter) drops the pet into sleep. Cursor activity wakes
         # it. Detected in _check_hover which already runs every 100ms.
@@ -660,10 +669,18 @@ class PetWindow(QWidget):
         # Follow active window: if the foreground hwnd changed since the
         # last poll, drift toward it. The _follow_anim field stores the
         # in-flight animation; we re-target by stopping and restarting.
-        if hwnd != self._last_follow_hwnd:
+        # Skip while walking -- the walk QPropertyAnimation on `pos`
+        # would fight the follow animation and the pet would look like
+        # it's treading water.
+        if hwnd != self._last_follow_hwnd and self._walk_phase == "idle":
             self._last_follow_hwnd = hwnd
             self._drift_toward(fg.center(), strength=0.30)
             return  # prefer follow over avoid when both could apply
+        if hwnd != self._last_follow_hwnd:
+            # Still record the change so when walk finishes, the next
+            # follow poll sees the current foreground and doesn't fire
+            # a stale catch-up drift.
+            self._last_follow_hwnd = hwnd
         # If we're here, the foreground didn't change; nothing to do.
 
     def _drift_toward(self, target_global: QPoint, strength: float = 0.3) -> None:
