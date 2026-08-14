@@ -140,6 +140,24 @@ bash scripts/gen_pet_sprites.sh peter "Strong male dalmatian, stocky muscular bu
 
 ## 重要 bug 教训
 
+### QPainter try/finally
+
+`paintEvent` 内 `painter = QPainter(self)` 后必须保证 `painter.end()` 一定调用。`if/else` 里的早 return 路径、异常路径（QImage 损坏、字体找不到 glyph 等）都会让 painter 残留。Qt 每次后续 paintEvent 都会日志报 `QBackingStore::endPaint() called with active painter`。修法：
+
+```python
+painter = QPainter(self)
+try:
+    # ... all draw calls
+finally:
+    painter.end()
+```
+
+### 新加 Qt 类必须补 import
+
+在 `paintEvent` 加新的 Qt 绘制调用（`QColor` / `QFont` / `QEasingCurve` / `QPen` 等）时，**必须**在 `from PySide6.QtGui import (...)` 或 `from PySide6.QtCore import (...)` 列表里加上。否则 `NameError` 在 paintEvent 静默抛出，被 try/finally 吞掉，绘制失败但没明显错误（只有 stderr 的 `Error calling Python override of QWidget::paintEvent()` 提示）。
+
+加新功能时的检查清单：grep 文件里所有 `Q[A-Z]\w+` 类的使用，确认每个都在 import 列表里。
+
 ### winotify pipe 冲突
 
 Notifier 的 Listener 绑到固定命名 pipe，旧进程残留会冲突。**用 per-pid AUMID**：
@@ -185,21 +203,31 @@ engine.start()  # ← 不能漏
 return run_pet(engine)
 ```
 
-## 宠物互动 (Phase 1 + Phase 2)
+## 宠物互动
 
-| 互动 | 触发 | 内部逻辑 | 文件位置 |
-|---|---|---|---|
-| 摸头 (heart) | mousePress 500ms+ | `_long_press_timer` + `_start_petting` | `window.py` `mousePressEvent` |
-| 睡眠 (Zzz) | 鼠标停 ≥5min | `_check_hover` 检测 `_last_active_at` 差值 | `window.py` `_check_hover` |
-| 激光笔 (红点) | 鼠标速度 > 800 px/s | `_check_hover` 算 dt 距离/时间 | `window.py` `_check_hover` |
-| 自动避让 | 前景窗口覆盖 >50% | Win32 GetForegroundWindow + 1s 轮询 | `window.py` `_check_avoid` |
-| 跟 active window | foreground hwnd 变化 | 30% 漂移到新窗口中心 | `window.py` `_drift_toward` |
-| Walk-around | 鼠标停 5s | 已有；走 + 停 3s + 走回 | `window.py` `_update_walk_state` |
-| 数字键跳 | 1-9 键 | 跳到 priority 第 N 个 session | `window.py` `keyPressEvent` |
-| 单击跳 | mouseRelease（无 drag） | `_jump_to_attention` | `window.py` `mouseReleaseEvent` |
-| 双击菜单 | mouseDoubleClick | 取消单击 + 打开菜单 | `window.py` `mouseDoubleClickEvent` |
+宠物对用户的操作有反应，按"用户能感知的现象"列出：
 
-所有 painter 绘制在 `paintEvent` 内 `try/finally` 包好，确保 `painter.end()` 一定调用（修了之前的"called with active painter"警告）。新增 Qt 类（QColor、QFont、QEasingCurve）必须加到 PySide6.QtGui / QtCore import。
+| 互动 | 触发 | 现象 |
+|---|---|---|
+| Walk-around | 鼠标停 5s | 猫走过去看，回到原位停 3s |
+| 单击跳 | 左键单击 | 跳到最紧急的 session 窗口 |
+| 双击菜单 | 左键双击 | 打开菜单（切换形象、隐藏） |
+| 摸头 | 左键长按 500ms+ | ❤️ 浮在猫头上，松开消失 |
+| 激光笔 | 鼠标快速移动（>800 px/s） | 红点跟随鼠标，停下 1s 消失 |
+| 睡眠 | 5 分钟不动 | 猫变 70% 透明 + Zzz |
+| 自动避让 | 前景窗口覆盖 >50% | 猫跳到屏幕对角（300ms ease-out-cubic） |
+| 跟 active window | Alt+Tab / 点其他 app | 猫朝新窗口漂 30%（subtle） |
+| 数字键跳 | 1-9 键 | 跳到 priority 第 N 个 session |
+| Esc | Esc 键 | 关气泡 |
+
+状态对应的颜色（托盘图标 + 宠物色调）：
+- 红色感叹号：等待授权（你最该看的）
+- 橙：进程异常退出
+- 黄问号：等待输入 / 弹窗
+- 蓝：运行中
+- 灰：空闲
+
+完整用户使用说明见 README.md"## 桌面宠物 → ### 互动"。
 
 ## 常用命令
 
