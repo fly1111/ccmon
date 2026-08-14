@@ -235,7 +235,21 @@ def focus_window(hwnd: int) -> bool:
 
 def jump_to_session(pid: int, cwd: str) -> bool:
     """Resolve and focus. Returns True if we actually moved a window."""
-    # 0. Direct console focus: AttachConsole to the target PID and
+    # 0. IDE lock fast path. VS Code / Cursor sessions leave a
+    # ~/.claude/ide/<port>.lock file that pins the workspace and the
+    # owning IDE pid -- jumping by IDE pid gives us the full VS Code
+    # window (not the embedded terminal sub-control), which is what
+    # the user actually wants.
+    binding = match_ide_for_session(cwd)
+    if binding:
+        # Pick the VS Code window whose title contains the matching
+        # workspace folder basename (so multi-window VS Code doesn't
+        # jump to the wrong project).
+        window = _resolve_window_for_pid(binding.pid, cwd=cwd)
+        if window:
+            return focus_window(window.hwnd)
+
+    # 1. Direct console focus: AttachConsole to the target PID and
     #    focus its console window. This is the only way to reliably
     #    distinguish multiple tabs in the same WindowsTerminal
     #    instance -- all tabs share one wt.exe pid, so PID-based
@@ -245,16 +259,6 @@ def jump_to_session(pid: int, cwd: str) -> bool:
     if hwnd:
         if focus_window(hwnd):
             return True
-
-    # 1. IDE lock fast path
-    binding = match_ide_for_session(cwd)
-    if binding:
-        # VS Code / Cursor: pick the window whose title contains the
-        # matching workspace folder basename (so multi-window VS Code
-        # doesn't jump to the wrong project).
-        window = _resolve_window_for_pid(binding.pid, cwd=cwd)
-        if window:
-            return focus_window(window.hwnd)
 
     # 2. Process-tree walk
     for ancestor in _ancestors(pid):
