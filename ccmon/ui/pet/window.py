@@ -189,6 +189,11 @@ class PetWindow(QWidget):
         # paint tick -- a crop is cheap but doing it 30 times a second
         # for the same image is wasted work.
         self._walk_frame_cache: dict = {}
+        # Petting: long-press (>500ms hold) shows a heart above the pet
+        # for the duration of the press. Cheap interaction feedback; no
+        # audio yet (sound comes in Phase 5).
+        self._petting: bool = False
+        self._long_press_timer: QTimer | None = None
         # Cache of rendered frames keyed by State, so paintEvent doesn't
         # re-open the PNG (or re-paint the builtin dalmatian) every tick.
         self._image_cache: dict[State, Image.Image] = {}
@@ -326,6 +331,14 @@ class PetWindow(QWidget):
             QImage(image.tobytes("raw", "RGBA"), image.width, image.height, QImage.Format_RGBA8888)
         )
         painter.drawPixmap(0, 0, pixmap)
+
+        # Petting indicator: a heart floats above the pet while the user
+        # holds the left mouse button. Drawn AFTER the pixmap so it sits
+        # on top.
+        if self._petting:
+            painter.setPen(QColor("#FF6B9D"))
+            painter.setFont(QFont("Segoe UI Emoji", 22))
+            painter.drawText(PET_SIZE - 38, 30, "♥")
         painter.end()
 
     def _render_walk_frame(self) -> Image.Image:
@@ -390,6 +403,12 @@ class PetWindow(QWidget):
             self._click_timer.setSingleShot(True)
             self._click_timer.timeout.connect(self._jump_to_attention)
             self._click_timer.start(QApplication.doubleClickInterval())
+            # Long press: a hold of >500ms starts a petting interaction
+            # (heart above the pet). Cancelled by release / double-click.
+            self._long_press_timer = QTimer(self)
+            self._long_press_timer.setSingleShot(True)
+            self._long_press_timer.timeout.connect(self._start_petting)
+            self._long_press_timer.start(500)
             event.accept()
         elif event.button() == Qt.RightButton:
             self._show_menu(event.globalPosition().toPoint())
@@ -405,10 +424,14 @@ class PetWindow(QWidget):
         press_pos = self._press_pos
         self._press_pos = None
         self._drag_offset = None
+        # Stop the long-press timer if it hadn't fired yet. If it already
+        # fired (we're mid-petting), end the petting.
+        if self._long_press_timer is not None:
+            self._long_press_timer.stop()
+        if self._petting:
+            self._stop_petting()
+            return
         # If the user dragged (instead of clicking), the jump shouldn't fire.
-        # We cancel the pending timer here rather than letting it run -- if
-        # the cursor travels more than a few pixels between press and release
-        # the user clearly meant to move the pet, not jump.
         if press_pos is not None and self._click_timer is not None:
             moved = (event.position().toPoint() - press_pos).manhattanLength() > 5
             if moved:
@@ -416,10 +439,24 @@ class PetWindow(QWidget):
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            # Cancel the pending single-click jump before the menu takes over.
+            # Cancel the pending single-click jump and long-press before
+            # the menu takes over.
             if self._click_timer is not None:
                 self._click_timer.stop()
+            if self._long_press_timer is not None:
+                self._long_press_timer.stop()
+            if self._petting:
+                self._stop_petting()
             self._show_menu(event.globalPosition().toPoint())
+
+    def _start_petting(self) -> None:
+        self._petting = True
+        # Force a repaint so the heart draws immediately.
+        self.update()
+
+    def _stop_petting(self) -> None:
+        self._petting = False
+        self.update()
 
     def keyPressEvent(self, event) -> None:
         """Keyboard shortcuts while the bubble is up.
