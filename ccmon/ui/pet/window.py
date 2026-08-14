@@ -414,8 +414,12 @@ class PetWindow(QWidget):
         """Pick the current walk-cycle frame for the active style.
 
         Walk frames are pre-rendered PNGs (mmx video -> ffmpeg -> per-frame
-        chroma key) and cycled at WALK_FPS. Loaded images are cached on
-        first use; we don't reload the same frame 30 times a second.
+        chroma key) and cycled at a frame rate matched to the cycle length
+        so every style's walk loop takes ~1 second end to end. With 4 key
+        frames that's 4 fps; with 12 (luna/peter2 from video) it's 12 fps.
+        Capped at 12 fps so longer cycles don't get blurry, and floored
+        at 2 fps so very short cycles still read as walking instead of
+        strobing.
 
         The saved walk frame for each style already faces the desired
         "going" direction (gen_pet_sprites.sh mirrors after generation).
@@ -423,7 +427,7 @@ class PetWindow(QWidget):
         opposite way; the mirror is cached per (asset, flipped) so it
         happens at most once per frame.
         """
-        from .sprite_loader import list_walk_frames, WALK_FPS
+        from .sprite_loader import list_walk_frames
         frames = list_walk_frames(get_active_style())
         if not frames:
             # No walk cycle for this style -- render the mood art instead
@@ -435,7 +439,11 @@ class PetWindow(QWidget):
                 size=PET_SIZE,
                 spot_jitter=self._spot_jitter,
             )
-        idx = int(time.monotonic() * WALK_FPS) % len(frames)
+        # Dynamic fps = number of frames (capped). This makes every
+        # style's walk loop take ~1 second end-to-end regardless of how
+        # many key frames it has.
+        fps = max(2, min(12, len(frames)))
+        idx = int(time.monotonic() * fps) % len(frames)
         asset = frames[idx]
         flipped = self._walk_phase == "returning"
         cache_key = (asset, flipped)
