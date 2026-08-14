@@ -55,6 +55,12 @@ WALK_FPS = 12  # 4 frames at 12 fps = 3 fps perceived, comfortable for a cat
 #        back.
 WALK_FACES_RIGHT: dict[str, bool] = {
     "luna": True,
+    # peter2's saved walk frames face LEFT (we deliberately mirrored
+    # them at generation time to give peter2 a distinct walk direction
+    # from luna). window.py reads this flag and applies a flip only
+    # when the going direction doesn't match the saved direction --
+    # so on the way out peter2 keeps its left-facing pose, on the
+    # way back it flips to face right.
     "peter2": True,
 }
 
