@@ -131,6 +131,47 @@ def _ancestors(pid: int, *, max_depth: int = 10) -> list[int]:
     return chain
 
 
+def _wt_for_session(pid: int) -> int | None:
+    """Find the WindowsTerminal.exe (or wt.exe) PID that owns the
+    console for `pid`.
+
+    WT sets the WT_SESSION env var on every shell it spawns; the
+    WT process itself doesn't have one. Find the WT process whose
+    descendant chain (recursively) contains a process whose
+    WT_SESSION matches `pid`'s WT_SESSION.
+
+    Needed because in ConPTY mode the shell's parent is
+    services.exe, not wt.exe -- a plain psutil parent walk would
+    miss wt entirely. This is the difference between jumping to
+    the right WT tab and jumping to whichever WT was focused last.
+    """
+    try:
+        proc = psutil.Process(pid)
+        target_session = proc.environ().get("WT_SESSION")
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+    if not target_session:
+        return None
+    try:
+        wt_candidates = [
+            p for p in psutil.process_iter(["pid", "name"])
+            if "wt.exe" in (p.info["name"] or "").casefold()
+        ]
+    except psutil.Error:
+        return None
+    for wt in wt_candidates:
+        try:
+            for child in wt.children(recursive=True):
+                try:
+                    if child.environ().get("WT_SESSION") == target_session:
+                        return wt.pid
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
+
 def focus_window(hwnd: int) -> bool:
     """Bring a hwnd to the foreground. Returns True iff our hwnd is now foreground."""
     if not user32.IsWindow(hwnd):
@@ -162,6 +203,18 @@ def focus_window(hwnd: int) -> bool:
 
 def jump_to_session(pid: int, cwd: str) -> bool:
     """Resolve and focus. Returns True if we actually moved a window."""
+    # 0. WT-specific: find the right wt.exe for this session's
+    #    WT_SESSION. Necessary because in ConPTY mode the shell's
+    #    parent is services.exe, not wt.exe, so a plain psutil parent
+    #    walk would never reach wt. Without this we fall through to
+    #    stage 3's "any visible window with the cwd in its title" and
+    #    jump to whichever WT was focused last.
+    wt_pid = _wt_for_session(pid)
+    if wt_pid:
+        window = _resolve_window_for_pid(wt_pid, cwd=cwd)
+        if window:
+            return focus_window(window.hwnd)
+
     # 1. IDE lock fast path
     binding = match_ide_for_session(cwd)
     if binding:
