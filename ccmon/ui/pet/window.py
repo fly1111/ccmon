@@ -956,23 +956,21 @@ class PetWindow(QWidget):
     def _refresh_bubble(self) -> None:
         if self._bubble is None:
             return
-        # Dedupe by pid only. The engine can briefly surface two
-        # entries for the same pid across a state transition (e.g.
-        # IDLE -> RUNNING, where the old registry value and the
-        # new one both reach the scanner in the same tick). A wider
-        # key (pid+state) was tried and left duplicate rows when the
-        # state changed; with pid-only dedupe the row simply shows
-        # whichever entry was last in the snapshot. (Different pids
-        # with the same project + state are still shown separately
-        # -- those are genuinely distinct sessions.)
-        seen_pids: set[int] = set()
+        # Dedupe by session_id when present, else fall back to pid.
+        # The engine surfaces a Claude Code session as multiple
+        # entries with the SAME session_id but different pids (e.g.
+        # the shell, the cc parent, and any intermediaries all
+        # appear). deduping by pid would render three rows for what
+        # the user thinks is one session; session_id groups them.
+        seen: set[str | int] = set()
         sessions: list[Session] = []
         for s in self._sessions:
             if s.state is State.EXITED:
                 continue
-            if s.pid in seen_pids:
+            key = s.session_id if s.session_id else s.pid
+            if key in seen:
                 continue
-            seen_pids.add(s.pid)
+            seen.add(key)
             sessions.append(s)
         if not sessions:
             self._bubble.hide()
