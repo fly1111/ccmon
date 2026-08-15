@@ -956,7 +956,19 @@ class PetWindow(QWidget):
     def _refresh_bubble(self) -> None:
         if self._bubble is None:
             return
-        sessions = [s for s in self._sessions if s.state is not State.EXITED]
+        # Dedupe by pid: if the registry contains two entries for the
+        # same pid (transient snapshot during file swap, etc.), show
+        # only the most recent one. Without this the bubble stacks
+        # duplicate rows.
+        seen_pids: set[int] = set()
+        sessions: list[Session] = []
+        for s in self._sessions:
+            if s.state is State.EXITED:
+                continue
+            if s.pid in seen_pids:
+                continue
+            seen_pids.add(s.pid)
+            sessions.append(s)
         if not sessions:
             self._bubble.hide()
             return
