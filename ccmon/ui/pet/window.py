@@ -956,18 +956,22 @@ class PetWindow(QWidget):
     def _refresh_bubble(self) -> None:
         if self._bubble is None:
             return
-        # Dedupe by pid: if the registry contains two entries for the
-        # same pid (transient snapshot during file swap, etc.), show
-        # only the most recent one. Without this the bubble stacks
-        # duplicate rows.
-        seen_pids: set[int] = set()
+        # Dedupe by (pid, project, state). The engine scan can
+        # briefly surface two entries for the same pid (file swap
+        # window) or a stale clone of a session reappearing with the
+        # same project + state. The earlier pid-only dedupe left
+        # one of those on the bubble; the project+state key catches
+        # the rest. Detail can vary across snapshots (e.g. different
+        # tool being approved) so we don't key on it.
+        seen: set[tuple[int, str, State]] = set()
         sessions: list[Session] = []
         for s in self._sessions:
             if s.state is State.EXITED:
                 continue
-            if s.pid in seen_pids:
+            key = (s.pid, s.project, s.state)
+            if key in seen:
                 continue
-            seen_pids.add(s.pid)
+            seen.add(key)
             sessions.append(s)
         if not sessions:
             self._bubble.hide()
