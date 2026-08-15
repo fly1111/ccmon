@@ -124,14 +124,19 @@ def mmx_video_call(prompt: str, out_mp4: Path) -> None:
     cmd = (
         f'mmx video generate --model MiniMax-Hailuo-2.3 '
         f'--prompt "{prompt}" '
-        f'--duration 5 '
+        # Note: --duration / --ratio are H3-only params. Hailuo-2.3
+        # (the legacy / token-plan-friendly model) ignores them and
+        # returns 5s by default. Passing --duration here makes the
+        # server reject the whole call with code 2.
         f'--download "{out_mp4}" '
         f'--poll-interval 10 '
         f'--timeout 1800 '
         f'--non-interactive'
     )
     print(f"  mmx video generate -> {out_mp4.name}", flush=True)
-    subprocess.run(cmd, shell=True, check=True, capture_output=True)
+    # capture_output=False so error messages from mmx show on the
+    # console (was capture_output=True swallowing them).
+    subprocess.run(cmd, shell=True, check=True)
 
 
 def ffmpeg_extract(mp4: Path, frames_dir: Path) -> None:
@@ -209,10 +214,12 @@ def process_frames(frames_dir: Path, style_dir: Path) -> None:
         if y1 - y0 < side_padded:
             y0 = max(0, y1 - side_padded)
         cropped = img.crop((x0, y0, x0 + side_padded, y0 + side_padded))
-        # Chroma key the cropped RGB, then mirror (face left), then resize
+        # Chroma key the cropped RGB, then resize. mmx video already
+        # renders the cat facing right, so we save it as-is. The
+        # PetWindow runtime flips the frame when _walk_facing_left
+        # is False (right-bound) to get the correct travel direction.
         keyed = chroma_key(cropped)
-        mirrored = ImageOps.mirror(keyed)
-        mirrored.resize((192, 192), Image.LANCZOS).save(
+        keyed.resize((192, 192), Image.LANCZOS).save(
             style_dir / f"walk_{idx}_alpha.png"
         )
         print(f"  walk_{idx}_alpha.png", flush=True)
