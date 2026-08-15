@@ -956,18 +956,24 @@ class PetWindow(QWidget):
     def _refresh_bubble(self) -> None:
         if self._bubble is None:
             return
-        # Dedupe by session_id when present, else fall back to pid.
-        # The engine surfaces a Claude Code session as multiple
-        # entries with the SAME session_id but different pids (e.g.
-        # the shell, the cc parent, and any intermediaries all
-        # appear). deduping by pid would render three rows for what
-        # the user thinks is one session; session_id groups them.
-        seen: set[str | int] = set()
+        # Dedupe by session_id when present; fall back to
+        # (project, state) otherwise. The screenshot the user shared
+        # showed 3 rows per Claude session because each engine
+        # snapshot entry had a distinct session_id (or a missing
+        # one) -- dedupe by session_id still didn't merge them.
+        # Falling back to (project, state) means 'one Claude
+        # session in this project at this state' collapses to a
+        # single row regardless of how the engine labelled the
+        # shell/cc/parent trio.
+        seen: set[tuple] = set()
         sessions: list[Session] = []
         for s in self._sessions:
             if s.state is State.EXITED:
                 continue
-            key = s.session_id if s.session_id else s.pid
+            if s.session_id:
+                key = ("sid", s.session_id)
+            else:
+                key = ("ps", s.project, s.state)
             if key in seen:
                 continue
             seen.add(key)
