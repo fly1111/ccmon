@@ -13,12 +13,11 @@ Run one style per day, or run multiple over several days.
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 REPO = Path("D:/vscodepro/ccmon")
 
@@ -26,6 +25,18 @@ REPO = Path("D:/vscodepro/ccmon")
 # screen; subject description matches the style's reference image
 # so the breed stays consistent. (Hailuo-2.3 doesn't accept
 # --subject-ref, so the breed is locked in via the prose prompt.)
+#
+# IMPORTANT: the cat should fill only 60-70% of the frame, centred
+# with breathing room on all four sides. If it fills 90%+, the bbox
+# crop can't add headroom when the cat is drawn hugging the frame
+# edge -- paws get clipped during stride.
+COMMON_SUFFIX = (
+    " Side view, full body visible, smooth consistent animation. "
+    "Subject centred in frame and fills about 60% of the frame height "
+    "and width, with generous empty space on all four sides for safe "
+    "cropping. Plain solid bright neon green background (#00FF00 chroma "
+    "key green screen) for background removal."
+)
 STYLES: dict[str, str] = {
     "luna": (
         "A cute kawaii 2D cartoon chibi female Chinese Shandong lion cat, "
@@ -35,10 +46,8 @@ STYLES: dict[str, str] = {
         "cell-shading, sticker style with clean outlines, no fur texture "
         "detail. The cat walks naturally in a continuous four-step walk "
         "cycle that loops seamlessly: front-right paw lifted, both paws "
-        "grounded, front-left paw lifted, both paws grounded, then repeats. "
-        "Side view, full body visible, smooth consistent animation, plain "
-        "solid bright neon green background (#00FF00 chroma key green screen) "
-        "for background removal."
+        "grounded, front-left paw lifted, both paws grounded, then repeats."
+        + COMMON_SUFFIX
     ),
     "blackcat": (
         "A cute kawaii 2D cartoon chibi black cat, sleek black fur with "
@@ -47,10 +56,8 @@ STYLES: dict[str, str] = {
         "cell-shading, sticker style with clean outlines, no fur texture "
         "detail. The cat walks naturally in a continuous four-step walk "
         "cycle that loops seamlessly: front-right paw lifted, both paws "
-        "grounded, front-left paw lifted, both paws grounded, then repeats. "
-        "Side view, full body visible, smooth consistent animation, plain "
-        "solid bright neon green background (#00FF00 chroma key green screen) "
-        "for background removal."
+        "grounded, front-left paw lifted, both paws grounded, then repeats."
+        + COMMON_SUFFIX
     ),
     "orangecat": (
         "A cute kawaii 2D cartoon chibi orange tabby cat, soft orange tabby "
@@ -60,10 +67,8 @@ STYLES: dict[str, str] = {
         "cell-shading, sticker style with clean outlines, no fur texture "
         "detail. The cat walks naturally in a continuous four-step walk "
         "cycle that loops seamlessly: front-right paw lifted, both paws "
-        "grounded, front-left paw lifted, both paws grounded, then repeats. "
-        "Side view, full body visible, smooth consistent animation, plain "
-        "solid bright neon green background (#00FF00 chroma key green screen) "
-        "for background removal."
+        "grounded, front-left paw lifted, both paws grounded, then repeats."
+        + COMMON_SUFFIX
     ),
     "persian": (
         "A cute kawaii 2D cartoon chibi Persian cat, long flowing white-cream "
@@ -73,10 +78,8 @@ STYLES: dict[str, str] = {
         "flat soft cell-shading, sticker style with clean outlines, no fur "
         "texture detail. The cat walks naturally in a continuous four-step "
         "walk cycle that loops seamlessly: front-right paw lifted, both paws "
-        "grounded, front-left paw lifted, both paws grounded, then repeats. "
-        "Side view, full body visible, smooth consistent animation, plain "
-        "solid bright neon green background (#00FF00 chroma key green screen) "
-        "for background removal."
+        "grounded, front-left paw lifted, both paws grounded, then repeats."
+        + COMMON_SUFFIX
     ),
     "blackshiba": (
         "A cute kawaii 2D cartoon chibi black Shiba Inu dog, sleek "
@@ -86,10 +89,8 @@ STYLES: dict[str, str] = {
         "soft cell-shading, sticker style with clean outlines, no fur texture "
         "detail. The dog walks naturally in a continuous four-step walk cycle "
         "that loops seamlessly: front-right paw lifted, both paws grounded, "
-        "front-left paw lifted, both paws grounded, then repeats. Side view, "
-        "full body visible, smooth consistent animation, plain solid bright "
-        "neon green background (#00FF00 chroma key green screen) for "
-        "background removal."
+        "front-left paw lifted, both paws grounded, then repeats."
+        + COMMON_SUFFIX
     ),
     "crocodile": (
         "A cute kawaii 2D cartoon chibi crocodile, olive green scaly skin "
@@ -100,9 +101,8 @@ STYLES: dict[str, str] = {
         "style with clean outlines. The crocodile walks naturally in a "
         "continuous four-step walk cycle that loops seamlessly: front-right "
         "paw lifted, both paws grounded, front-left paw lifted, both paws "
-        "grounded, then repeats. Side view, full body visible, smooth consistent "
-        "animation, plain solid bright neon green background (#00FF00 chroma "
-        "key green screen) for background removal."
+        "grounded, then repeats."
+        + COMMON_SUFFIX
     ),
     "tiger": (
         "A cute kawaii 2D cartoon chibi tiger, bright orange fur with bold "
@@ -112,10 +112,8 @@ STYLES: dict[str, str] = {
         "cell-shading, sticker style with clean outlines, no fur texture "
         "detail. The tiger walks naturally in a continuous four-step walk "
         "cycle that loops seamlessly: front-right paw lifted, both paws "
-        "grounded, front-left paw lifted, both paws grounded, then repeats. "
-        "Side view, full body visible, smooth consistent animation, plain "
-        "solid bright neon green background (#00FF00 chroma key green screen) "
-        "for background removal."
+        "grounded, front-left paw lifted, both paws grounded, then repeats."
+        + COMMON_SUFFIX
     ),
 }
 
@@ -186,14 +184,17 @@ def chroma_key(img: Image.Image) -> Image.Image:
 
 
 def process_frames(frames_dir: Path, style_dir: Path) -> None:
-    """Per-frame: bbox-centre + chroma key + mirror + resize 192."""
+    """Per-frame: bbox-centre + 25% padding + chroma key + resize 192.
+
+    The mmx prompt asks for the subject to fill ~60% of the frame, so 25%
+    padding gives ~5% empty space on each side after chroma key + resize.
+    That keeps heads/tails from being clipped at the canvas edge.
+    """
     raw_frames = sorted(frames_dir.glob("frame_*.png"))
     if len(raw_frames) != 12:
         print(f"  WARNING: expected 12 frames, got {len(raw_frames)}", flush=True)
     for idx, fp in enumerate(raw_frames, 1):
         img = Image.open(fp).convert("RGB")
-        # 768x768 1:1 crop centred on the cat's bbox, fixed side = 768
-        # (video is 1366x768; cat usually covers ~1200px horizontally)
         bb = cat_bbox(img)
         if bb[0] >= bb[2] or bb[1] >= bb[3]:
             print(f"  frame {idx}: empty bbox, skipping", flush=True)
@@ -201,7 +202,7 @@ def process_frames(frames_dir: Path, style_dir: Path) -> None:
         bw = bb[2] - bb[0]
         bh = bb[3] - bb[1]
         side = max(bw, bh)
-        pad = int(side * 0.10)
+        pad = int(side * 0.25)
         side_padded = min(768, side + 2 * pad)
         cx = (bb[0] + bb[2]) // 2
         cy = (bb[1] + bb[3]) // 2
