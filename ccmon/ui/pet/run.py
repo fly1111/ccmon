@@ -56,8 +56,15 @@ def _copy_id(sid: str) -> None:
         ctypes.windll.user32.CloseClipboard()
 
 
-def run(engine: Engine) -> int:
-    """Launch the pet under its own QApplication. Blocks."""
+def run(engine: Engine, window_ref: dict | None = None) -> int:
+    """Launch the pet under its own QApplication. Blocks.
+
+    `window_ref` is an optional dict that, if provided, gets the live
+    PetWindow written into it as `window_ref["window"]` once the Qt
+    window exists. Used by _run_both so the tray thread can invoke
+    cross-thread methods on the pet window (QMetaObject.invokeMethod
+    needs the actual QObject handle).
+    """
     # High-DPI scaling -- must happen before QApplication construction.
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -66,6 +73,8 @@ def run(engine: Engine) -> int:
     app.setQuitOnLastWindowClosed(False)
 
     window = PetWindow()
+    if window_ref is not None:
+        window_ref["window"] = window
     window.show()
     bridge = PetBridge(window)
     engine.subscribe(bridge.receive)
@@ -84,7 +93,11 @@ def run(engine: Engine) -> int:
     window.open_transcript.connect(_open_transcript)
 
     def hide_self() -> None:
-        window.hide()
+        # toggle: show if hidden, hide if visible. Lets the right-click
+        # "隐藏宠物" item also serve as the bring-back path when the user
+        # re-shows the window via the same menu (the menu button label
+        # is static -- the action is just "toggle").
+        window.toggle_visibility()
 
     window.toggle_self.connect(hide_self)
 

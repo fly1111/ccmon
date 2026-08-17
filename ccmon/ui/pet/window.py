@@ -39,6 +39,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
     Signal,
+    Slot,
 )
 from PySide6.QtGui import (
     QAction,
@@ -142,6 +143,13 @@ class PetWindow(QWidget):
     mute_requested = Signal(int)
     toggle_self = Signal()
     style_changed = Signal(str)
+
+    # Slot used by other threads (tray pystray) to flip visibility
+    # without reaching into Qt internals. The tray calls it via
+    # QMetaObject.invokeMethod with QueuedConnection.
+    @Slot()
+    def toggle_visibility(self) -> None:
+        self.setVisible(not self.isVisible())
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -956,24 +964,21 @@ class PetWindow(QWidget):
     def _refresh_bubble(self) -> None:
         if self._bubble is None:
             return
-        # Dedupe by session_id when present; fall back to
-        # (project, state) otherwise. The screenshot the user shared
-        # showed 3 rows per Claude session because each engine
-        # snapshot entry had a distinct session_id (or a missing
-        # one) -- dedupe by session_id still didn't merge them.
-        # Falling back to (project, state) means 'one Claude
-        # session in this project at this state' collapses to a
-        # single row regardless of how the engine labelled the
-        # shell/cc/parent trio.
-        seen: set[tuple] = set()
+        # Dedupe by (project, state). The engine can surface a single
+        # Claude Code session as multiple entries (different pids for
+        # the shell / the cc parent / the conhost, sometimes with
+        # different session_id values too). None of session_id, pid,
+        # or pid+state consistently grouped them -- the only stable
+        # key was (project, state). Different sessions in the same
+        # project at the same state collapse to one row; different
+        # states (e.g. IDLE vs RUNNING in the same project) stay
+        # as separate rows so the user can see the transition.
+        seen: set[tuple[str, State]] = set()
         sessions: list[Session] = []
         for s in self._sessions:
             if s.state is State.EXITED:
                 continue
-            if s.session_id:
-                key = ("sid", s.session_id)
-            else:
-                key = ("ps", s.project, s.state)
+            key = (s.project, s.state)
             if key in seen:
                 continue
             seen.add(key)

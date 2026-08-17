@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import __version__, registry, transcript
 from .models import Session, State
+from PySide6.QtCore import QMetaObject, Qt
 
 _ANSI = {
     State.NEEDS_APPROVAL: "\033[1;31m",
@@ -260,8 +261,16 @@ def _run_tray() -> int:
 
 
 def _run_pet() -> int:
-    """Launch the desktop pet only -- no tray, no notifications."""
+    """Launch the desktop pet with a minimal tray (show/hide only).
+
+    Without a tray the pet's right-click "隐藏宠物" would strand the
+    window with no way back; we always pair pet mode with a tray icon
+    whose only job is "显示宠物" / "隐藏宠物" + "退出".
+    """
+    import threading
+
     from .engine import Engine
+    from .ui.app import run as run_tray
     from .ui.pet.run import run as run_pet
 
     engine = Engine(interval=1.5)
@@ -269,7 +278,54 @@ def _run_pet() -> int:
     # too so the scanner runs even before the pet window's event loop
     # has a chance to subscribe.
     engine.start()
-    return run_pet(engine)
+
+    pet_window_ref: dict = {}
+
+    def tray_in_thread() -> None:
+        def toggle_pet() -> None:
+            win = pet_window_ref.get("window")
+            if win is None:
+                return
+            QMetaObject.invokeMethod(
+                win, "toggle_visibility", Qt.ConnectionType.QueuedConnection,
+            )
+
+        def pet_visible() -> bool:
+            win = pet_window_ref.get("window")
+            return True if win is None else win.isVisible()
+
+        def quit_app() -> None:
+            # Quit the Qt loop from the tray thread. invokeMethod on the
+            # QApplication's "quit" slot reaches the main thread.
+            from PySide6.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            if app is not None:
+                QMetaObject.invokeMethod(
+                    app, "quit", Qt.ConnectionType.QueuedConnection,
+                )
+
+        callbacks = {
+            # Pet-only mode: no sessions list to jump to, but pystray
+            # callbacks still get called with the menu rows even though
+            # we register only show/hide + quit.
+            "jump": lambda *_a, **_k: None,
+            "copy_id": lambda *_a, **_k: None,
+            "open_transcript": lambda *_a, **_k: None,
+            "mute": lambda *_a, **_k: None,
+            "toggle_pet": toggle_pet,
+            "pet_visible": pet_visible,
+            "open_settings": lambda: None,
+            "refresh": lambda: None,
+            "on_quit": quit_app,  # quit the Qt app from the tray thread
+        }
+        run_tray(engine, callbacks)
+
+    threading.Thread(
+        target=tray_in_thread, name="ccmon-tray", daemon=True,
+    ).start()
+
+    return run_pet(engine, pet_window_ref)
 
 
 def _run_both() -> int:
@@ -299,14 +355,35 @@ def _run_both() -> int:
     threading.Thread(target=loop_thread, name="ccmon-notify", daemon=True).start()
 
     # Run the pet on the main thread (Qt needs it); the tray runs on a worker.
+    # The pet writes itself into pet_window_ref once the QWidget exists, so
+    # the tray thread can drive toggle_visibility via QMetaObject.invokeMethod
+    # (Qt requires cross-thread QWidget access to go through the event loop).
+    pet_window_ref: dict = {}
+
     def tray_in_thread():
+        def toggle_pet() -> None:
+            win = pet_window_ref.get("window")
+            if win is None:
+                return
+            # QueuedConnection: invocation lands on the Qt main thread, which
+            # owns the window. Direct call from a worker would crash.
+            QMetaObject.invokeMethod(
+                win, "toggle_visibility", Qt.ConnectionType.QueuedConnection,
+            )
+
+        def pet_visible() -> bool:
+            win = pet_window_ref.get("window")
+            if win is None:
+                return True
+            return win.isVisible()
+
         callbacks = {
             "jump": lambda pid: _jump_via_engine(engine, pid),
             "copy_id": _copy_id,
             "open_transcript": _open_transcript,
             "mute": lambda pid: notifier.muted.add(pid),
-            "toggle_pet": lambda: None,
-            "pet_visible": lambda: True,
+            "toggle_pet": toggle_pet,
+            "pet_visible": pet_visible,
             "open_settings": lambda: None,
             "refresh": lambda: None,
         }
@@ -342,7 +419,7 @@ def _run_both() -> int:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    code = run_pet(engine)
+    code = run_pet(engine, pet_window_ref)
     # run_pet returned (likely because of graceful_quit from its own
     # signal handler) -- make sure the other threads are stopped.
     try:

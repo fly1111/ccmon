@@ -103,16 +103,24 @@ def _menu(icon: pystray.Icon, tick_data: Tick, callbacks: dict) -> tuple[pystray
         ),
         pystray.MenuItem("通知设置", lambda _: callbacks["open_settings"]()),
         pystray.MenuItem("立即刷新", lambda _: callbacks["refresh"]()),
-        pystray.MenuItem("退出", lambda _: icon.stop()),
+        pystray.MenuItem("退出", lambda _: _quit_app(icon, callbacks)),
     )
 
 
-def run(engine: Engine, callbacks: dict, *, initial_tick: Tick | None = None) -> None:
-    """Block on the pystray event loop. Engine ticks drive menu updates.
+def _quit_app(icon, callbacks: dict) -> None:
+    """Tray "退出" handler. Stops pystray, then runs the optional
+    `on_quit` callback (used by pet-only mode to also quit the Qt
+    app since the pet runs the Qt loop on the main thread)."""
+    on_quit = callbacks.get("on_quit")
+    if on_quit is not None:
+        try:
+            on_quit()
+        except Exception:  # noqa: BLE001
+            log.exception("on_quit callback failed")
+    icon.stop()
 
-    `callbacks` keys: jump, copy_id, open_transcript, mute, toggle_pet,
-    pet_visible, open_settings, refresh.
-    """
+
+def run(engine: Engine, callbacks: dict, *, initial_tick: Tick | None = None) -> None:
     icon_state = {"tick": initial_tick, "image": None}
     icon_lock = threading.Lock()
 
