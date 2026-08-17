@@ -248,8 +248,11 @@ def gen_video_walk(style: str) -> None:
         ffmpeg_extract(mp4, raw_dir)
         process_frames(raw_dir, style_dir)
     finally:
-        if mp4.exists():
-            mp4.unlink()
+        # Only the ffmpeg-extracted intermediate PNGs are throwaway --
+        # they can be regenerated from the mp4 in a second. The mp4
+        # itself (walk_source.mp4) is kept so the user can re-derive
+        # different crops without spending another mmx video quota.
+        # To free disk: rm <style_dir>/walk_source.mp4 manually.
         if raw_dir.exists():
             for fp in raw_dir.iterdir():
                 fp.unlink()
