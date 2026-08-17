@@ -117,6 +117,10 @@ def classify(status: str | None, waiting_for: str | None, *, alive: bool) -> Sta
         return State.UNKNOWN
     if status == "busy":
         return State.RUNNING
+    # 'shell' (Claude Code >= 2.1.x): CC is currently executing a shell
+    # tool call. Functionally equivalent to busy from the user's POV.
+    if status == "shell":
+        return State.RUNNING
     if status == "idle":
         return State.IDLE
     if status == "waiting":
