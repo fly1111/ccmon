@@ -174,6 +174,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
         args = parser.parse_args((argv or []) + ["ps"])
+    # Single-instance gate: GUI modes (tray/pet/both) share one lockfile.
+    # `ps` is a CLI tool -- multiple invocations are fine, and they exit
+    # quickly so there's no "second window" problem to solve.
+    if getattr(args, "command", None) in {"tray", "pet", "both"}:
+        from .single_instance import SingleInstance
+
+        lock = SingleInstance()
+        if not lock.acquire():
+            print(
+                f"ccmon 已在运行 (PID {lock.holder_pid}). "
+                f"如需重启，先结束旧进程。",
+                file=sys.stderr,
+            )
+            return 1
+        # Best-effort release on clean exit; OS cleans up on hard exit.
+        import atexit
+
+        atexit.register(lock.release)
     return args.func(args)
 
 
